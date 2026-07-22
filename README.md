@@ -6,8 +6,45 @@ a Streamable HTTP transport that bridges the official
 WHATWG Request/Response. The [@hono/mcp](https://www.npmjs.com/package/@hono/mcp)
 architecture, in Python.
 
-> **Status: design phase.** Nothing installable yet. The internal design memo
-> (Japanese, per project convention) lives in [DESIGN.md](DESIGN.md).
+> **Status: alpha (0.1.x).** The transport serves MCP Inspector, Claude Code,
+> and the official SDK client today (single-JSON responses; the optional GET
+> SSE stream and Workers Durable Object sessions land in 0.2). The internal
+> design memo (Japanese, per project convention) lives in [DESIGN.md](DESIGN.md).
+
+```python
+from mcp.server.lowlevel import Server   # official SDK — define your tools here
+from hayate import Hayate
+from hayate_mcp import McpMount
+
+server = Server("my-tools")
+# … @server.list_tools() / @server.call_tool() …
+
+app = Hayate()
+McpMount(server, path="/mcp").register(app)   # that's the whole integration
+```
+
+Serve it with any ASGI server (`uvicorn server:app`), then connect:
+
+```sh
+npx @modelcontextprotocol/inspector --cli http://127.0.0.1:8000/mcp --transport http --method tools/list
+```
+
+```sh
+claude mcp add my-tools --transport http http://127.0.0.1:8000/mcp
+```
+
+## What it implements
+
+| Verb | Behavior |
+|---|---|
+| POST | JSON-RPC request → single JSON response (`initialize` mints an `Mcp-Session-Id`); notifications → 202 |
+| DELETE | Explicit session termination |
+| GET | 405 until v0.2 (optional server-initiated SSE stream) |
+
+Plus spec-mandated Origin validation (DNS-rebinding defense) and an
+in-memory session store with idle eviction. Protocol handling — capabilities,
+tool dispatch, versioning — stays entirely in the official SDK: this package
+is transport only, so spec revisions ride SDK upgrades.
 
 ## Why
 
@@ -15,27 +52,8 @@ architecture, in Python.
   own web app still goes through ASGI plumbing with known friction.
 - Cloudflare's remote-MCP story (Agents SDK, McpAgent) is TypeScript-only —
   MCP on Python Workers is unclaimed territory. hayate's SSE and Durable
-  Object support are already verified on workerd.
-- This package implements *only* the transport (POST/GET/DELETE + SSE +
-  `Mcp-Session-Id` + Origin validation, per the MCP spec). Tools are defined
-  with the official SDK; the protocol itself is never reimplemented.
-
-## Planned shape
-
-```python
-from mcp.server import Server      # official SDK — define your tools here
-from hayate import Hayate
-from hayate_mcp import McpMount
-
-server = Server("my-tools")
-
-app = Hayate()
-McpMount(server, path="/mcp").register(app)
-```
-
-Same code on uvicorn and Cloudflare Python Workers; sessions back onto a
-Durable Object on Workers. OAuth via
-[hayate-auth](https://github.com/hayatepy/hayate-auth) is on the roadmap.
+  Object support are already verified on workerd, and the SDK itself imports
+  and runs there (docs/research/pyodide.md).
 
 ## License
 

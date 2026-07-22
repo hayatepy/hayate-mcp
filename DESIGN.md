@@ -171,7 +171,7 @@ hayate-mcp は HTTP 側でメッセージを受け、ストリーム経由で `S
 | 版 | 内容 | 受け入れ基準 |
 |---|---|---|
 | ~~**spike**~~ | **完了(2026-07-22)**: SDK import + echo ツールの in-process 一周を workerd で確認 | ✅ research/pyodide.md に記録。§6 は SDK ブリッジ一本で確定 |
-| **v0.1** | CPython: StreamableHTTPTransport + memory SessionStore + Origin 検証 | **MCP Inspector と Claude Code から接続しツール実行できる**(uvicorn) |
+| ~~**v0.1**~~ | **完了(2026-07-22)**: McpMount(POST=JSON 単発 / DELETE / GET=405)+ Mcp-Session-Id + memory SessionStore(idle eviction)+ Origin 検証 | ✅ **MCP Inspector CLI から接続し tools/list・tools/call 実行を実測**(uvicorn)。✅ 公式 SDK クライアント(`streamable_http_client` + `ClientSession`)での実 HTTP 一周を E2E テストとして CI に常設。テスト 16。Claude Code 実機接続は同一プロトコル経路のためユーザー側 1 コマンド(`claude mcp add --transport http`)で可 |
 | v0.2 | Workers + DO SessionStore(+ resumability 判断) | 同じサーバーコードが workerd で動き、Inspector から wss/https で接続できる |
 | v0.3 | hayate-auth 連携(OAuth / RFC 9728) | 認可済みクライアントのみ接続可。authless 構成も引き続き選択可 |
 | v1.0 | API 凍結 | 本体 v1.0 より後 |
