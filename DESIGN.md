@@ -135,8 +135,12 @@ hayate-mcp は HTTP 側でメッセージを受け、ストリーム経由で `S
   - トークン検証は `verify_token(token) -> claims | None` の注入(RFC 6750 Bearer)。
     **AS(トークン発行)側は分離**し、hayate-auth の将来の AS モード、または任意の
     RFC 6749 AS を指せる。これが「MCP サーバー + その AS を 1 アプリに」story の RS 半分。
-- **残**: hayate-auth の AS モード(/authorize・/token・動的クライアント登録)は auth 側の
-  別機能。揃えば同一アプリに MCP + AS をマウントする完全形になる(証拠駆動)。
+- ~~**残**: hayate-auth の AS モード(/authorize・/token・動的クライアント登録)は auth 側の
+  別機能。揃えば同一アプリに MCP + AS をマウントする完全形になる(証拠駆動)。~~
+  **達成(2026-07-23、auth 0.6.0)**: auth の AS モード(DESIGN §19)が出荷され、
+  `verify_token=auth.oauth_token_verifier(resource=...)` で完全形が成立。
+  公式 SDK クライアントの OAuth フル一周が auth 側 examples/mcp-oauth の CI に常設
+  (実測ログ: auth `docs/research/authorization-server.md`)。
 
 ## 6. 実行モデル / Workers 制約
 
