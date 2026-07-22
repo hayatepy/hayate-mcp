@@ -1,10 +1,13 @@
 """McpMount: the Streamable HTTP transport as a pure fetch handler.
 
-Spec: modelcontextprotocol.io, Streamable HTTP transport (2025-06-18 line).
-POST carries JSON-RPC and replies with a single JSON body; GET opens the
-optional server-initiated SSE stream (one per session); DELETE terminates
-a session. Resumability (Last-Event-ID) is out until it can live in the
-Durable Object store (DESIGN §4).
+Spec: modelcontextprotocol.io, Streamable HTTP transport, tracking the SDK's
+latest revision (2025-11-25 with mcp>=1.28 on CPython). POST carries JSON-RPC
+and replies with a single JSON body; GET opens the optional server-initiated
+SSE stream (one per session); DELETE terminates a session. The
+``MCP-Protocol-Version`` header is validated against the SDK's
+``SUPPORTED_PROTOCOL_VERSIONS`` (unsupported -> 400). Resumability
+(Last-Event-ID) is out until it can live in the Durable Object store
+(DESIGN §4).
 """
 
 from __future__ import annotations
@@ -13,12 +16,14 @@ from typing import Any
 
 from hayate import Context, Request, Response, problem
 from hayate.sse import event_stream as sse_stream
+from mcp.shared.version import SUPPORTED_PROTOCOL_VERSIONS
 from mcp.types import JSONRPCError, JSONRPCMessage, JSONRPCRequest, JSONRPCResponse
 from pydantic import ValidationError
 
 from .session import McpSession, MemorySessionStore
 
 SESSION_HEADER = "mcp-session-id"
+PROTOCOL_VERSION_HEADER = "mcp-protocol-version"
 
 
 class McpMount:
@@ -72,6 +77,13 @@ class McpMount:
         if not self._origin_allowed(raw):
             return problem(403, title="Origin not allowed")
 
+        # MCP-Protocol-Version header (transports spec, 2025-06-18+): an
+        # unsupported value is a hard 400. GET/DELETE carry no body, so this
+        # is the only place they can declare a version; for POST the header
+        # is absent on the initialize request and validated afterwards.
+        if raw.method in ("GET", "DELETE") and not self._protocol_version_ok(raw):
+            return problem(400, title="Unsupported MCP-Protocol-Version")
+
         if self.authorization is not None:
             claims = await self.authorization.authenticate(raw.headers.get("authorization"))
             if claims is None:
@@ -84,6 +96,14 @@ class McpMount:
         if raw.method == "GET":
             return self._get(raw)
         return problem(405, title="Method Not Allowed", headers={"allow": "GET, POST, DELETE"})
+
+    def _protocol_version_ok(self, raw: Request) -> bool:
+        """True unless the client declared a version this server can't speak.
+
+        A missing header passes (the transports spec says assume 2025-03-26
+        for back-compat); a present-but-unsupported value must 400."""
+        version = raw.headers.get(PROTOCOL_VERSION_HEADER)
+        return version is None or version in SUPPORTED_PROTOCOL_VERSIONS
 
     # -- verbs -------------------------------------------------------------------------
 
@@ -98,12 +118,18 @@ class McpMount:
             # 2025-06-18 dropped JSON-RPC batching, so an array is invalid too.
             return problem(400, title="Body must be a single JSON-RPC message")
 
-        if self.stateless:
-            return await self._post_stateless(message)
-
         is_initialize = (
             isinstance(message.root, JSONRPCRequest) and message.root.method == "initialize"
         )
+        # The MCP-Protocol-Version header is sent on every request *after*
+        # initialize; validate it there (initialize has no negotiated version
+        # yet, so it is exempt).
+        if not is_initialize and not self._protocol_version_ok(raw):
+            return problem(400, title="Unsupported MCP-Protocol-Version")
+
+        if self.stateless:
+            return await self._post_stateless(message)
+
         if is_initialize:
             session = McpSession(self.server, self.initialization_options, id=self.session_id)
             await self.store.add(session)

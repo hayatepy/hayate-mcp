@@ -65,11 +65,12 @@ stdio transport(SDK が既に提供)。
 
 | 対象 | 文書 | 対応 |
 |---|---|---|
-| MCP | modelcontextprotocol.io spec — **Streamable HTTP transport**(2025-06-18 改訂系) | transport 実装の唯一の根拠。対応リビジョンは SDK に追従し、README に明記 |
+| MCP | modelcontextprotocol.io spec — **Streamable HTTP transport**。最新 stable **2025-11-25**(SDK `LATEST_PROTOCOL_VERSION`)。**2026-07-28 が RC**(stateless core) | transport 実装の唯一の根拠。対応リビジョンは SDK に追従(§6.2)。`MCP-Protocol-Version` ヘッダ検証を実装 |
+| MCP-Protocol-Version | Streamable HTTP transport(2025-06-18+) | initialize 後の全リクエストに必須。**未対応値は 400 MUST**。SDK の `SUPPORTED_PROTOCOL_VERSIONS` で判定。ヘッダ欠落は後方互換で通す(spec は 2025-03-26 仮定) |
 | JSON-RPC 2.0 | jsonrpc.org | ワイヤ形式(SDK が処理。本パッケージは触らない) |
 | SSE | WHATWG HTML | ストリーミング応答。本体 `sse.py` を利用 |
-| Origin 検証 | MCP spec(**MUST**)+ RFC 6454 | DNS rebinding 対策。既定で有効(§5) |
-| 認可 | MCP Authorization(OAuth 2.1 / RFC 9728 Protected Resource Metadata) | v0.3(hayate-auth 連携) |
+| Origin 検証 | MCP spec(**MUST**)+ RFC 6454 | present かつ invalid な Origin は 403(§5) |
+| 認可 | MCP Authorization(OAuth 2.1 / RFC 9728 Protected Resource Metadata) | v0.4(§5、実装済み) |
 
 ---
 
@@ -164,6 +165,21 @@ initialize / tools/list / tools/call のどれも単発 JSON-RPC で処理でき
   セッション跨ぎ状態が要る場合のみ。証拠駆動で保留。
 - 制約: GET(サーバー起点 SSE)は 405、DELETE は no-op 200。ステートフルは ASGI 経路。
 
+### 6.2 リビジョン追従と Workers の SDK 制約(v0.5、2026-07-23)
+
+- **依存フロアは `mcp>=1.12`**(ハード `>=1.28` にしない)。理由:
+  - **CPython/ASGI** は最新 SDK 1.28.1 に解決 → `LATEST_PROTOCOL_VERSION = 2025-11-25`。
+  - **Workers(Pyodide)** は現状 mcp 1.28 を vendor **できない**: 1.28 が要求する新しい
+    pydantic に対応する **pydantic-core の wasm wheel が Pyodide index(0.28.3)に無い**
+    (実測: 解決不能)。pywrangler は wasm 互換の最新(mcp 1.12.4、2025-06-18)に解決する。
+  - → 「最新準拠」は**ランタイム依存**: CPython は 2025-11-25、Workers は当面 2025-06-18。
+    Pyodide が pydantic-core を更新したら Workers も 2025-11-25 に上がる(フロアはそのまま)。
+- **`MCP-Protocol-Version` ヘッダ検証**は SDK の `SUPPORTED_PROTOCOL_VERSIONS` を使うので、
+  どちらのランタイムでも「そのランタイムの SDK が話せる版」を正しく受理/拒否する(両方で実測)。
+- **2026-07-28 RC(stateless core)**: initialize ハンドシェイクと Mcp-Session-Id を transport
+  から外す方向。**§6.1 の stateless モードが既にこの形**。RC が stable 化し SDK が追従したら、
+  stateless を既定側に寄せる判断をする(証拠駆動、SDK 追従の原則どおり)。
+
 ## 7. テスト戦略
 
 - transport 単体は `await mount.fetch(Request(...))` 直叩き(house style の純関数コア)。
@@ -199,6 +215,7 @@ initialize / tools/list / tools/call のどれも単発 JSON-RPC で処理でき
 | v0.2 | **出荷(2026-07-23)**: GET SSE ストリーム(1 本/セッション、409 で多重拒否、close で終端。テスト 20)+ resumability 判断(§4) | GET SSE ✅ |
 | v0.3 | **出荷(2026-07-23)**: `stateless=True` モード(§6.1)。**Cloudflare Workers で緑化**(DO 不要) | ✅ **workerd 上で MCP フル一周(initialize → tools/list → tools/call)を curl と MCP Inspector CLI で実測**。テスト 27(stateless 7 追加) |
 | v0.4 | **出荷(2026-07-23)**: OAuth 2.0 Resource Server 側(RFC 9728 Protected Resource Metadata + Bearer 検証 + 401/`WWW-Authenticate`)。§5 | ✅ 認可済みクライアントのみ接続可・authless 構成も選択可。テスト 35(authorization 8 追加)。AS 側(トークン発行)は hayate-auth の将来機能 |
+| v0.5 | **出荷(2026-07-23)**: 最新 stable **2025-11-25** 準拠(SDK 1.28.1)+ `MCP-Protocol-Version` ヘッダ検証(§2、§6.2) | ✅ CPython は 2025-11-25 ネゴ、Workers は wasm 制約で 2025-06-18(§6.2)。両ランタイムで無効版 400 を実測。テスト 42(protocol-version 7 追加) |
 | v1.0 | API 凍結 | 本体 v1.0 より後 |
 
 ## 11. Workers 対応(2026-07-23、緑化)

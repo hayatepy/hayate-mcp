@@ -6,11 +6,14 @@ a Streamable HTTP transport that bridges the official
 WHATWG Request/Response. The [@hono/mcp](https://www.npmjs.com/package/@hono/mcp)
 architecture, in Python.
 
-> **Status: alpha (0.3.x).** The transport serves MCP Inspector, Claude Code,
-> and the official SDK client — single-JSON POST responses plus the optional
-> server-initiated GET SSE stream on ASGI, and a **stateless mode that runs on
-> Cloudflare Workers** (verified on workerd: initialize → tools/list →
-> tools/call). The internal design memo (Japanese) lives in [DESIGN.md](DESIGN.md).
+> **Status: alpha (0.5.x).** Tracks the SDK's latest revision — **2025-11-25**
+> on CPython/ASGI (mcp ≥ 1.28), with `MCP-Protocol-Version` header validation.
+> Serves MCP Inspector, Claude Code, and the official SDK client — single-JSON
+> POST plus the optional server-initiated GET SSE stream on ASGI, and a
+> **stateless mode that runs on Cloudflare Workers** (verified on workerd).
+> On Workers the SDK is currently pinned to a 2025-06-18-capable version by
+> Pyodide's `pydantic-core` wheel availability (DESIGN §6.2). The internal
+> design memo (Japanese) lives in [DESIGN.md](DESIGN.md).
 
 ```python
 from mcp.server.lowlevel import Server   # official SDK — define your tools here

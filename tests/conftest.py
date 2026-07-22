@@ -12,7 +12,7 @@ INITIALIZE = {
     "id": 1,
     "method": "initialize",
     "params": {
-        "protocolVersion": "2025-06-18",
+        "protocolVersion": "2025-11-25",
         "capabilities": {},
         "clientInfo": {"name": "test-client", "version": "0.0.0"},
     },
