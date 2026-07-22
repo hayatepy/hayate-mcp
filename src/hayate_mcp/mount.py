@@ -32,6 +32,7 @@ class McpMount:
         store: MemorySessionStore | None = None,
         session_id: str | None = None,
         stateless: bool = False,
+        authorization: Any | None = None,
     ) -> None:
         if not path.startswith("/"):
             raise ValueError("path must start with '/'")
@@ -53,16 +54,28 @@ class McpMount:
         # This is the mode that runs on Cloudflare Workers, where a bounded
         # request cannot host a detached ``server.run`` (research/workers-do.md).
         self.stateless = stateless
+        # OAuth 2.0 Resource Server config (DESIGN §5): when set, MCP requests
+        # require a valid Bearer token and the RFC 9728 metadata is served.
+        self.authorization = authorization
 
     # -- the core ----------------------------------------------------------------------
 
     async def fetch(self, request: Request) -> Response:
         raw = getattr(request, "raw", request)
+
+        if self.authorization is not None and raw.url.pathname == self._metadata_path():
+            return self._serve_metadata()
+
         if raw.url.pathname != self.path:
             return problem(404, title="Not Found")
 
         if not self._origin_allowed(raw):
             return problem(403, title="Origin not allowed")
+
+        if self.authorization is not None:
+            claims = await self.authorization.authenticate(raw.headers.get("authorization"))
+            if claims is None:
+                return self._unauthorized()
 
         if raw.method == "POST":
             return await self._post(raw)
@@ -206,6 +219,23 @@ class McpMount:
             return origin != "null"
         return origin == raw.url.origin or origin in self.trusted_origins
 
+    def _metadata_path(self) -> str:
+        from .authorization import WELL_KNOWN_PRM
+
+        return WELL_KNOWN_PRM
+
+    def _serve_metadata(self) -> Response:
+        return Response(
+            _json_dumps(self.authorization.metadata()),
+            status=200,
+            headers={"content-type": "application/json"},
+        )
+
+    def _unauthorized(self) -> Response:
+        res = problem(401, title="Authorization required")
+        res.headers.set("www-authenticate", self.authorization.www_authenticate())
+        return res
+
     def register(self, app: Any) -> None:
         """Mount on a hayate app (DESIGN TL;DR: this is the whole sugar)."""
 
@@ -214,3 +244,14 @@ class McpMount:
 
         for method in ("GET", "POST", "DELETE"):
             app.on(method, self.path)(mcp_handler)
+
+        # RFC 9728: the metadata lives at a fixed well-known path, not under
+        # the MCP path, so it needs its own route.
+        if self.authorization is not None:
+            app.on("GET", self._metadata_path())(mcp_handler)
+
+
+def _json_dumps(data: Any) -> str:
+    import json
+
+    return json.dumps(data, separators=(",", ":"))

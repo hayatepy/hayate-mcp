@@ -47,6 +47,27 @@ in-memory session store with idle eviction. Protocol handling — capabilities,
 tool dispatch, versioning — stays entirely in the official SDK: this package
 is transport only, so spec revisions ride SDK upgrades.
 
+## Authorization (OAuth 2.0 Resource Server)
+
+Pass an `Authorization` to require Bearer tokens and serve RFC 9728 Protected
+Resource Metadata (MCP Authorization, 2025-06-18):
+
+```python
+from hayate_mcp import Authorization, McpMount
+
+McpMount(server, authorization=Authorization(
+    resource="https://mcp.example.com",
+    authorization_servers=["https://auth.example.com"],
+    verify_token=verify,   # async (token) -> claims | None
+)).register(app)
+```
+
+Unauthenticated requests get `401` with
+`WWW-Authenticate: Bearer resource_metadata="…/.well-known/oauth-protected-resource"`,
+so clients (Claude, Inspector) discover the authorization server. Token
+*issuance* is the AS's job — point `verify_token` at hayate-auth or any
+RFC 6749 server.
+
 ## On Cloudflare Workers
 
 Pass `stateless=True` and mount on a plain Worker — no Durable Object needed.

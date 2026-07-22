@@ -12,11 +12,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
-__all__ = ["McpMount", "MemorySessionStore", "__version__"]
+__all__ = ["Authorization", "McpMount", "MemorySessionStore", "__version__"]
 
 if TYPE_CHECKING:
+    from .authorization import Authorization
     from .mount import McpMount
     from .session import MemorySessionStore
 
@@ -30,4 +31,8 @@ def __getattr__(name: str):
         from .session import MemorySessionStore
 
         return MemorySessionStore
+    if name == "Authorization":
+        from .authorization import Authorization
+
+        return Authorization
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -68,12 +68,14 @@ def rpc_request(
     method: str = "POST",
     origin: str | None = None,
     path: str = "/mcp",
+    headers: dict[str, str] | None = None,
 ) -> Request:
-    headers = {"content-type": "application/json", "accept": "application/json"}
+    merged = {"content-type": "application/json", "accept": "application/json", **(headers or {})}
     if session_id is not None:
-        headers["mcp-session-id"] = session_id
+        merged["mcp-session-id"] = session_id
     if origin is not None:
-        headers["origin"] = origin
+        merged["origin"] = origin
+    headers = merged
     body = payload if isinstance(payload, str) else json.dumps(payload)
     if method in ("GET", "DELETE"):
         body = None

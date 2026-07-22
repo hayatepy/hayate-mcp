@@ -123,10 +123,19 @@ hayate-mcp は HTTP 側でメッセージを受け、ストリーム経由で `S
 
 - **Origin 検証は既定 ON**(spec MUST。`trusted_origins` を指定させる)。
   localhost バインド時の注意も README に明記。
-- v0.1 は authless(spec 上 optional)+ `Authorization` ヘッダ検証フック(callable 注入)。
-- v0.3: hayate-auth の OAuth AS プラグインと接続し、RFC 9728 の
-  Protected Resource Metadata を提供。Claude などの MCP クライアントの
-  OAuth フローに正式対応する。
+- v0.1 は authless(spec 上 optional)。
+- **v0.4: OAuth 2.0 Resource Server 側を実装(出荷済み)**。`McpMount(authorization=Authorization(...))`
+  で MCP Authorization(2025-06-18)+ RFC 9728 に対応:
+  - `/.well-known/oauth-protected-resource` に Protected Resource Metadata(RFC 9728)を提供
+    (`resource` / `authorization_servers` / `bearer_methods_supported` / `scopes_supported`)。
+    このエンドポイントはトークン不要の公開ディスカバリ。
+  - 未認証リクエストは **401 + `WWW-Authenticate: Bearer resource_metadata="…"`**(RFC 9728 §5.1)
+    でメタデータ URL を案内。Claude 等のクライアントはここから AS を発見する。
+  - トークン検証は `verify_token(token) -> claims | None` の注入(RFC 6750 Bearer)。
+    **AS(トークン発行)側は分離**し、hayate-auth の将来の AS モード、または任意の
+    RFC 6749 AS を指せる。これが「MCP サーバー + その AS を 1 アプリに」story の RS 半分。
+- **残**: hayate-auth の AS モード(/authorize・/token・動的クライアント登録)は auth 側の
+  別機能。揃えば同一アプリに MCP + AS をマウントする完全形になる(証拠駆動)。
 
 ## 6. 実行モデル / Workers 制約
 
@@ -189,7 +198,7 @@ initialize / tools/list / tools/call のどれも単発 JSON-RPC で処理でき
 | ~~**v0.1**~~ | **完了(2026-07-22)**: McpMount(POST=JSON 単発 / DELETE / GET=405)+ Mcp-Session-Id + memory SessionStore(idle eviction)+ Origin 検証 | ✅ **MCP Inspector CLI から接続し tools/list・tools/call 実行を実測**(uvicorn)。✅ 公式 SDK クライアント(`streamable_http_client` + `ClientSession`)での実 HTTP 一周を E2E テストとして CI に常設。テスト 16。✅ **Claude Code 実機接続も実測(2026-07-23)**: `claude mcp add --transport http` → `claude mcp list` で Connected、ヘッドレス実行で echo ツールの呼び出しに成功。受け入れ基準は両実クライアントで完全達成 |
 | v0.2 | **出荷(2026-07-23)**: GET SSE ストリーム(1 本/セッション、409 で多重拒否、close で終端。テスト 20)+ resumability 判断(§4) | GET SSE ✅ |
 | v0.3 | **出荷(2026-07-23)**: `stateless=True` モード(§6.1)。**Cloudflare Workers で緑化**(DO 不要) | ✅ **workerd 上で MCP フル一周(initialize → tools/list → tools/call)を curl と MCP Inspector CLI で実測**。テスト 27(stateless 7 追加) |
-| v0.4 | hayate-auth 連携(OAuth / RFC 9728) | 認可済みクライアントのみ接続可。authless 構成も引き続き選択可 |
+| v0.4 | **出荷(2026-07-23)**: OAuth 2.0 Resource Server 側(RFC 9728 Protected Resource Metadata + Bearer 検証 + 401/`WWW-Authenticate`)。§5 | ✅ 認可済みクライアントのみ接続可・authless 構成も選択可。テスト 35(authorization 8 追加)。AS 側(トークン発行)は hayate-auth の将来機能 |
 | v1.0 | API 凍結 | 本体 v1.0 より後 |
 
 ## 11. Workers 対応(2026-07-23、緑化)
