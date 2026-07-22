@@ -130,13 +130,14 @@ hayate-mcp は HTTP 側でメッセージを受け、ストリーム経由で `S
 
 ## 6. 実行モデル / Workers 制約
 
-- **最大リスク: mcp SDK(anyio / pydantic / httpx 系依存)が Pyodide/workerd で
-  import できるかは未検証**。Workers の built-in packages に fastapi / pydantic 系が
-  あるため anyio / pydantic は存在する見込みだが、SDK 本体と httpx 系の可否は
-  spike で実測する(§9)。
-- **spike の decision point**: SDK が Pyodide 不可の場合、Workers 版のみ
-  transport + 最小プロトコル(initialize / tools/list / tools/call)を自前実装する
-  縮退案に分岐する。その場合も CPython 版は SDK ブリッジのまま。
+- ~~最大リスク: mcp SDK が Pyodide/workerd で import できるかは未検証~~
+  **解決(2026-07-22 spike — research/pyodide.md)**: SDK 1.12.4 と全依存
+  (pydantic-core は Pyodide wasm wheel)が workerd で import 成功。さらに
+  lowlevel `Server` + `ClientSession` を anyio メモリストリームで対向させた
+  initialize → tools/list → tools/call の一周が workerd 上で 87 ms で成功。
+  **縮退案(最小プロトコル自前実装)は不要 — SDK ブリッジ一本で確定**。
+- 残コスト: vendor ~15.4 MiB / Total ~43.5 MiB(4095 modules)。デプロイサイズ制限との
+  関係は v0.2 で確認。SDK 依存が常に載るコスト構造は README に明記する。
 - SSE / FFI 境界(proxy lifecycle、`_js_bytes`)は本体 research §5 の知見を継承。
 
 ## 7. テスト戦略
@@ -160,7 +161,7 @@ hayate-mcp は HTTP 側でメッセージを受け、ストリーム経由で `S
 
 | リスク | 対応 |
 |---|---|
-| SDK が Pyodide で動かない | spike を最初に実施。縮退案(§6)を事前に定義済み |
+| ~~SDK が Pyodide で動かない~~ | **解消(2026-07-22 spike)**: import + プロトコル一周を workerd 実機で確認(§6、research/pyodide.md) |
 | MCP spec の改訂速度 | transport のみに表面積を絞り SDK 追従。対応リビジョンを README に明記 |
 | FastMCP v3 が同領域を埋める | 土俵を変える: Workers + hayate-auth 合流(§5)。汎用 ASGI 統合では競わない |
 | PyPI 名スクワット | `hayate-mcp` 空き確認 2026-07-22。0.0.x 早期公開で確保 |
@@ -169,7 +170,7 @@ hayate-mcp は HTTP 側でメッセージを受け、ストリーム経由で `S
 
 | 版 | 内容 | 受け入れ基準 |
 |---|---|---|
-| **spike** | mcp SDK import on workerd 可否 + echo ツール | 可否・数値を research メモに記録し §6 の分岐を決定 |
+| ~~**spike**~~ | **完了(2026-07-22)**: SDK import + echo ツールの in-process 一周を workerd で確認 | ✅ research/pyodide.md に記録。§6 は SDK ブリッジ一本で確定 |
 | **v0.1** | CPython: StreamableHTTPTransport + memory SessionStore + Origin 検証 | **MCP Inspector と Claude Code から接続しツール実行できる**(uvicorn) |
 | v0.2 | Workers + DO SessionStore(+ resumability 判断) | 同じサーバーコードが workerd で動き、Inspector から wss/https で接続できる |
 | v0.3 | hayate-auth 連携(OAuth / RFC 9728) | 認可済みクライアントのみ接続可。authless 構成も引き続き選択可 |
