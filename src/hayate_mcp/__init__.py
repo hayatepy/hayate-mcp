@@ -1,18 +1,18 @@
 """hayate-mcp: mount an MCP server on a hayate app.
 
-Top-level names are resolved lazily (PEP 562) so that importing
-``hayate_mcp.workers`` on Cloudflare Workers does not eagerly pull in the
-``mcp`` SDK. The SDK's transitive dependency ``rpds`` seeds entropy at import
-via ``getRandomValues``, which workerd forbids during global-scope
-evaluation; deferring keeps the Workers entry module importable at global
-scope, and CPython users still write ``from hayate_mcp import McpMount``.
+Top-level names are resolved lazily (PEP 562) so that ``import hayate_mcp``
+on Cloudflare Workers does not eagerly pull in the ``mcp`` SDK. The SDK's
+transitive dependency ``rpds`` seeds entropy at import via
+``getRandomValues``, which workerd forbids during global-scope evaluation;
+deferring keeps a Workers entry module importable at global scope while
+CPython users still write ``from hayate_mcp import McpMount``.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = ["McpMount", "MemorySessionStore", "__version__"]
 

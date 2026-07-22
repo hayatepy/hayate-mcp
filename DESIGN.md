@@ -136,9 +136,24 @@ hayate-mcp は HTTP 側でメッセージを受け、ストリーム経由で `S
   lowlevel `Server` + `ClientSession` を anyio メモリストリームで対向させた
   initialize → tools/list → tools/call の一周が workerd 上で 87 ms で成功。
   **縮退案(最小プロトコル自前実装)は不要 — SDK ブリッジ一本で確定**。
-- 残コスト: vendor ~15.4 MiB / Total ~43.5 MiB(4095 modules)。デプロイサイズ制限との
-  関係は v0.2 で確認。SDK 依存が常に載るコスト構造は README に明記する。
+- 残コスト: vendor ~15.4 MiB / Total ~43.5 MiB(4095 modules)。SDK 依存が常に載る
+  コスト構造は README に明記する。
 - SSE / FFI 境界(proxy lifecycle、`_js_bytes`)は本体 research §5 の知見を継承。
+
+### 6.1 stateless モード(Workers 対応の要、v0.3)
+
+**決定**: `McpMount(stateless=True)` は各リクエストで SDK の
+`Server.run(..., stateless=True)` を**そのリクエスト内で await 完結**させる
+(`_post_stateless`)。stateless の `ServerSession` は初期化済み扱いのため、
+initialize / tools/list / tools/call のどれも単発 JSON-RPC で処理できる。
+
+- **理由**: Workers の bounded なリクエストは、リクエストを跨ぐ detached task
+  (`asyncio.ensure_future(server.run(...))`)を許さず isolate を hard-crash させる
+  (§11.2、research/workers-do.md)。stateless では run が stream クローズで即完了するため
+  detached task が無く、Workers で成立する。**素の `to_workers(app)` で動く(DO 不要)**。
+- **却下しなかった代替**: DO でステートフル(§11.2)。サーバー起点ストリームや
+  セッション跨ぎ状態が要る場合のみ。証拠駆動で保留。
+- 制約: GET(サーバー起点 SSE)は 405、DELETE は no-op 200。ステートフルは ASGI 経路。
 
 ## 7. テスト戦略
 
@@ -172,26 +187,34 @@ hayate-mcp は HTTP 側でメッセージを受け、ストリーム経由で `S
 |---|---|---|
 | ~~**spike**~~ | **完了(2026-07-22)**: SDK import + echo ツールの in-process 一周を workerd で確認 | ✅ research/pyodide.md に記録。§6 は SDK ブリッジ一本で確定 |
 | ~~**v0.1**~~ | **完了(2026-07-22)**: McpMount(POST=JSON 単発 / DELETE / GET=405)+ Mcp-Session-Id + memory SessionStore(idle eviction)+ Origin 検証 | ✅ **MCP Inspector CLI から接続し tools/list・tools/call 実行を実測**(uvicorn)。✅ 公式 SDK クライアント(`streamable_http_client` + `ClientSession`)での実 HTTP 一周を E2E テストとして CI に常設。テスト 16。✅ **Claude Code 実機接続も実測(2026-07-23)**: `claude mcp add --transport http` → `claude mcp list` で Connected、ヘッドレス実行で echo ツールの呼び出しに成功。受け入れ基準は両実クライアントで完全達成 |
-| v0.2 | **出荷(2026-07-23)**: GET SSE ストリーム(1 本/セッション、409 で多重拒否、close で終端。テスト 20)+ resumability 判断(§4)。Workers + DO SessionStore は**実装済みだが on-workerd 未達**(§11、research/workers-do.md) | GET SSE ✅。**Workers DO の受け入れ(同一コードが workerd で動き Inspector から接続)は未達のまま v0.3 へ持ち越し** |
-| v0.3 | hayate-auth 連携(OAuth / RFC 9728) | 認可済みクライアントのみ接続可。authless 構成も引き続き選択可 |
+| v0.2 | **出荷(2026-07-23)**: GET SSE ストリーム(1 本/セッション、409 で多重拒否、close で終端。テスト 20)+ resumability 判断(§4) | GET SSE ✅ |
+| v0.3 | **出荷(2026-07-23)**: `stateless=True` モード(§6.1)。**Cloudflare Workers で緑化**(DO 不要) | ✅ **workerd 上で MCP フル一周(initialize → tools/list → tools/call)を curl と MCP Inspector CLI で実測**。テスト 27(stateless 7 追加) |
+| v0.4 | hayate-auth 連携(OAuth / RFC 9728) | 認可済みクライアントのみ接続可。authless 構成も引き続き選択可 |
 | v1.0 | API 凍結 | 本体 v1.0 より後 |
 
-## 11. Workers + Durable Object の現状(2026-07-23、未達)
+## 11. Workers 対応(2026-07-23、緑化)
 
-`hayate_mcp.workers`(`mcp_durable_object` + `route_to_session`)と
-`examples/workers/` を実装。構成はセッション別 DO ルーティング(session id = DO の
-`ctx.id`、outer app が `idFromString` で再構築)。**ローカル workerd で未達**。
-2026-07-23 に原因を確定(`docs/research/workers-do.md`):
-- **POST-body DO forward はシロ**(本体最小 repro で実証、本体 research §5 追記)。
-- **バンドル汚染も除外**(Windows 専用パッケージを削ったクリーンバンドルでも同症状)。
-- **確定ブロッカー = anyio `Server` の DO 内ライフサイクル**: `McpSession` の
-  `asyncio.ensure_future(server.run(...))` がリクエストを跨ぐ detached task を起こし、
-  DO 実行モデルに反して isolate が hard-crash → Python トレースの出ない `internal error`。
-  MCP SDK の永続接続前提 Server を bounded な DO リクエストで回す構造的ミスマッチ。
-途中で解決した障害(mcp の global/constructor scope import、DO クラス名)も同ログに記録。
-CPython ユニット(session_id ピン止め)はテスト済みだが、`workers` は **experimental**
-として README に明記済み。v0.3 で「DO モード = per-request server(detached task 無し)」を
-mount に設計してから再挑戦する。
+### 11.1 stateless モードで解決(出荷済み)
+
+**`McpMount(stateless=True)` + 素の `to_workers(app)` で Workers 対応が成立**。DO は不要。
+
+- 各リクエストで SDK の `Server.run(..., stateless=True)` を**そのリクエスト内で await 完結**
+  させる(`_post_stateless`)。stateless の `ServerSession` は初期化済み扱いなので、
+  initialize / tools/list / tools/call のどれも単発で処理できる。
+- **detached task が無い**ため、bounded な Workers リクエストに収まる。これが従来の
+  DO 案(下記 §11.2)を潰していた根本問題の回避策。
+- 制約: サーバー起点メッセージ(GET SSE)とセッション跨ぎ状態は持てない。GET は 405、
+  DELETE は no-op 200。ステートフルが要るツールは ASGI(examples/echo)を使う。
+
+### 11.2 DO によるステートフル Workers(将来)
+
+サーバー起点ストリームやセッション状態を Workers で持つには DO が要るが、
+`McpSession` の `asyncio.ensure_future(server.run(...))`(リクエストを跨ぐ detached task)は
+DO 実行モデルに反して isolate を hard-crash させる(2026-07-23 に確定、`docs/research/workers-do.md`。
+POST-body DO forward とバンドル汚染は原因から除外済み)。解くには DO 内で
+`ctx.waitUntil` / hibernation で Server task を明示的に生かす設計が要る。**証拠駆動で保留**
+(stateless で大半のツールサーバーは足りるため)。DO 用スキャフォールド `hayate_mcp.workers` は
+未達のため v0.3 で**削除**した。
 
 ### 決定済み(2026-07-22)
 

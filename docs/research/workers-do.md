@@ -1,7 +1,10 @@
-# Workers Durable Object session store — verification log (v0.2, in progress)
+# Workers Durable Object session store — verification log
 
-> 2026-07-23。ローカル workerd で **未達**の状態を正直に記録する。
-> 本体 research §5 と同じ規律: 実機で緑になるまでチェックしない。
+> **解決(2026-07-23)**: Workers 対応は **stateless モード**(`McpMount(stateless=True)` +
+> 素の `to_workers`、DO 不要)で緑化した(DESIGN §11.1、workerd 上で MCP フル一周を
+> Inspector CLI 実測)。本ログは「DO でステートフルを持つ将来案」がなぜ現状ブロックされるかの
+> 記録として残す。DO スキャフォールド `hayate_mcp.workers` は未達のため削除済み。
+> 本体 research §5 と同じ規律: 実機で緑になっていないものはチェックしない。
 
 ## 現状(2026-07-23)
 

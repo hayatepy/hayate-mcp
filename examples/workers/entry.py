@@ -1,23 +1,24 @@
-"""Remote MCP on Cloudflare Python Workers.
+"""Remote MCP on Cloudflare Python Workers — stateless, no Durable Object.
 
-The same echo server as examples/echo, but each session lives in its own
-Durable Object so it survives isolate recycling (DESIGN §4). The outer app
-is a stateless router; the transport runs inside the DO.
+Each request runs the SDK Server to completion on its own (``stateless=True``),
+so there is no long-lived task to keep warm: a plain Worker suffices. This is
+the mode that actually runs on Workers, where a bounded request cannot host a
+detached ``server.run`` (docs/research/workers-do.md).
+
+Stateful sessions with a server-initiated GET SSE stream stay the ASGI story
+(examples/echo); a Durable-Object-backed stateful mode is future work.
 
     uv run pywrangler dev      # local workerd
     uv run pywrangler deploy   # to Cloudflare
 """
 
 from hayate import Context, Hayate
-from hayate.adapters.workers import to_durable_object, to_workers
-
-from hayate_mcp.workers import mcp_durable_object, route_to_session
+from hayate.adapters.workers import to_workers
 
 
 def build_server():
-    # mcp is imported here, never at Worker global scope (its jsonschema
-    # dependency does a globally-disallowed op at import — hayate_mcp.workers
-    # explains the discipline).
+    # mcp is imported here, never at Worker global scope (its jsonschema/rpds
+    # chain seeds entropy at import, which workerd forbids in global scope).
     import mcp.types as types
     from mcp.server.lowlevel import Server
 
@@ -56,11 +57,14 @@ async def home(c: Context):
 @app.on("POST", "/mcp")
 @app.on("DELETE", "/mcp")
 async def mcp_route(c: Context):
-    return await route_to_session(c, c.env.MCP_SESSION)
+    # Import + mount are built lazily on first request (entropy-safe scope).
+    from hayate_mcp import McpMount
 
+    mount = getattr(app, "_mcp_mount", None)
+    if mount is None:
+        mount = McpMount(build_server(), path="/mcp", stateless=True)
+        app._mcp_mount = mount
+    return await mount.fetch(c.req)
 
-# The factory name is the Durable Object class name; it must match
-# ``class_name`` in wrangler.toml.
-McpSession = to_durable_object(mcp_durable_object(build_server, path="/mcp"))
 
 Default = to_workers(app)

@@ -13,7 +13,7 @@ from typing import Any
 
 from hayate import Context, Request, Response, problem
 from hayate.sse import event_stream as sse_stream
-from mcp.types import JSONRPCMessage, JSONRPCRequest
+from mcp.types import JSONRPCError, JSONRPCMessage, JSONRPCRequest, JSONRPCResponse
 from pydantic import ValidationError
 
 from .session import McpSession, MemorySessionStore
@@ -31,6 +31,7 @@ class McpMount:
         trusted_origins: tuple[str, ...] | list[str] = (),
         store: MemorySessionStore | None = None,
         session_id: str | None = None,
+        stateless: bool = False,
     ) -> None:
         if not path.startswith("/"):
             raise ValueError("path must start with '/'")
@@ -47,6 +48,11 @@ class McpMount:
         # identity is the DO's name: pin it so ``initialize`` returns that id
         # and every later request routes back to the same object (DESIGN §4).
         self.session_id = session_id
+        # Stateless mode (DESIGN §6.1): every request runs the SDK Server to
+        # completion on its own — no persistent session, no long-lived task.
+        # This is the mode that runs on Cloudflare Workers, where a bounded
+        # request cannot host a detached ``server.run`` (research/workers-do.md).
+        self.stateless = stateless
 
     # -- the core ----------------------------------------------------------------------
 
@@ -79,6 +85,9 @@ class McpMount:
             # 2025-06-18 dropped JSON-RPC batching, so an array is invalid too.
             return problem(400, title="Body must be a single JSON-RPC message")
 
+        if self.stateless:
+            return await self._post_stateless(message)
+
         is_initialize = (
             isinstance(message.root, JSONRPCRequest) and message.root.method == "initialize"
         )
@@ -108,13 +117,60 @@ class McpMount:
         await session.send_notification(message)
         return Response(None, status=202)
 
+    async def _post_stateless(self, message: JSONRPCMessage) -> Response:
+        """Run the SDK Server to completion for this one message.
+
+        A fresh stateless ``ServerSession`` treats itself as already
+        initialized, so any request — including ``initialize`` — is handled
+        without a persistent session. ``server.run`` returns as soon as the
+        request stream closes, so there is no detached task: the whole thing
+        fits inside a single bounded request (Workers-safe)."""
+        import anyio
+        from mcp.shared.message import SessionMessage
+
+        if not isinstance(message.root, JSONRPCRequest):
+            # Stateless has nowhere to route a bare notification; accept it.
+            return Response(None, status=202)
+
+        to_server_send, to_server_recv = anyio.create_memory_object_stream[
+            SessionMessage | Exception
+        ](1)
+        from_server_send, from_server_recv = anyio.create_memory_object_stream[SessionMessage](8)
+
+        reply: JSONRPCMessage | None = None
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(self._run_server_once, to_server_recv, from_server_send)
+            await to_server_send.send(SessionMessage(message=message))
+            async for item in from_server_recv:
+                root = item.message.root
+                if isinstance(root, JSONRPCResponse | JSONRPCError) and root.id == message.root.id:
+                    reply = item.message
+                    break
+            await to_server_send.aclose()
+
+        if reply is None:  # pragma: no cover - server produced no response
+            return problem(500, title="No response from MCP server")
+        return Response(
+            reply.model_dump_json(by_alias=True, exclude_none=True),
+            status=200,
+            headers={"content-type": "application/json"},
+        )
+
+    async def _run_server_once(self, read_stream: Any, write_stream: Any) -> None:
+        await self.server.run(
+            read_stream, write_stream, self.initialization_options, stateless=True
+        )
+
     def _get(self, raw: Request) -> Response:
         """The optional server-initiated SSE stream (one per session).
 
-        Resumability (Last-Event-ID) is deliberately not implemented in
-        v0.2: replay buffers belong with the Durable Object store, where
-        sessions survive isolate recycling (DESIGN §4).
+        Stateless mode has no persistent session to stream from, so the
+        server-initiated stream is not offered there (405). Resumability
+        (Last-Event-ID) stays unimplemented until it can live in a durable
+        store (DESIGN §4).
         """
+        if self.stateless:
+            return problem(405, title="Method Not Allowed", headers={"allow": "POST"})
         session_id = raw.headers.get(SESSION_HEADER)
         if session_id is None:
             return problem(400, title=f"Missing {SESSION_HEADER} header")
@@ -130,6 +186,9 @@ class McpMount:
         )
 
     async def _delete(self, raw: Request) -> Response:
+        if self.stateless:
+            # Nothing to terminate; the client's request is a well-formed no-op.
+            return Response(None, status=200)
         session_id = raw.headers.get(SESSION_HEADER)
         if session_id is None:
             return problem(400, title=f"Missing {SESSION_HEADER} header")

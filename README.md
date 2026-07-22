@@ -6,12 +6,11 @@ a Streamable HTTP transport that bridges the official
 WHATWG Request/Response. The [@hono/mcp](https://www.npmjs.com/package/@hono/mcp)
 architecture, in Python.
 
-> **Status: alpha (0.2.x).** The transport serves MCP Inspector, Claude Code,
-> and the official SDK client (single-JSON POST responses plus the optional
-> server-initiated GET SSE stream). The `hayate_mcp.workers` Durable Object
-> integration is **experimental** — implemented and unit-tested on CPython,
-> but not yet green on workerd (see [docs/research/workers-do.md](docs/research/workers-do.md)).
-> The internal design memo (Japanese) lives in [DESIGN.md](DESIGN.md).
+> **Status: alpha (0.3.x).** The transport serves MCP Inspector, Claude Code,
+> and the official SDK client — single-JSON POST responses plus the optional
+> server-initiated GET SSE stream on ASGI, and a **stateless mode that runs on
+> Cloudflare Workers** (verified on workerd: initialize → tools/list →
+> tools/call). The internal design memo (Japanese) lives in [DESIGN.md](DESIGN.md).
 
 ```python
 from mcp.server.lowlevel import Server   # official SDK — define your tools here
@@ -48,14 +47,36 @@ in-memory session store with idle eviction. Protocol handling — capabilities,
 tool dispatch, versioning — stays entirely in the official SDK: this package
 is transport only, so spec revisions ride SDK upgrades.
 
+## On Cloudflare Workers
+
+Pass `stateless=True` and mount on a plain Worker — no Durable Object needed.
+Each request runs the SDK server to completion on its own, which is what makes
+it Workers-safe:
+
+```python
+from hayate import Hayate
+from hayate.adapters.workers import to_workers
+from hayate_mcp import McpMount
+
+app = Hayate()
+McpMount(build_server(), stateless=True).register(app)
+Default = to_workers(app)
+```
+
+See [examples/workers](examples/workers) (verified on workerd). Trade-off:
+stateless has no server-initiated GET stream and no cross-request session
+state — use the default stateful mode on ASGI ([examples/echo](examples/echo))
+when you need those. (Import `mcp` lazily inside a handler on Workers, never
+at global scope — its dependency chain seeds entropy at import.)
+
 ## Why
 
 - Python is MCP's largest ecosystem, yet mounting an MCP endpoint inside your
   own web app still goes through ASGI plumbing with known friction.
 - Cloudflare's remote-MCP story (Agents SDK, McpAgent) is TypeScript-only —
-  MCP on Python Workers is unclaimed territory. hayate's SSE and Durable
-  Object support are already verified on workerd, and the SDK itself imports
-  and runs there (docs/research/pyodide.md).
+  MCP on Python Workers was unclaimed territory. hayate-mcp runs there today
+  (stateless mode, verified on workerd); the SDK imports and runs on Pyodide
+  (docs/research/pyodide.md).
 
 ## License
 
