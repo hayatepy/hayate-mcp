@@ -21,25 +21,38 @@ DO へのサブリクエスト dispatch が workerd レベルの `internal error
    (本体 CLAUDE.md の罠)。`mcp_durable_object` の内部 factory は `factory` という名前だった
    → `class_name` 引数で `__name__` を wrangler.toml の `class_name` に合わせて解決。
 
-### 未解決のブロッカー
+### 切り分け結果(2026-07-23 追加) — POST-body DO forward は「シロ」
 
-- `binding.get(binding.newUniqueId())` / `binding.get(binding.idFromString(id))` /
-  `binding.getByName(name)` の**いずれでも** DO サブリクエストが
-  `pyodide.http.AbortError: internal error; reference=...` になる。
-  Python の DO 側トレースは一切出ない(= workerd が Python 実行前に dispatch を失敗させている)。
-- POST ボディを bytes に読み直して再構築するルート(`stub.fetch(url, method, headers, body)`)、
-  元リクエスト素通し(`forward`)、`js.Request.new(raw, {headers})` 再構築 —
-  3 通りとも同じ `internal error`。ボディ再生の問題ではない。
-- 本体 research §5 で検証済みの DO は **GET forward**(`forward(c, getByName(name))`)。
-  **POST ボディを伴う DO サブリクエスト**は本体側で未検証の経路であり、ここが疑わしい。
-  切り分けには最小 DO(counter 相当)への POST を本体側で先に緑化するのが筋。
+本体側で最小 repro(`@to_durable_object` の counter に POST ルート + outer から
+`forward(c, stub)` で POST 転送)を作成 → **POST ボディは DO に正しく届く**。
+`getByName` / `get(newUniqueId())` / `get(idFromString())` の 3 経路すべてで POST 成立
+(本体 research §5 に追記済み)。つまり **DO forward の一般機構と id API は問題なし**。
+route_to_session は素の `forward` に戻した(rebuild 不要と確定)。
 
-## 次アクション(v0.2 継続)
+### ブロッカー確定(2026-07-23) — anyio `Server` の DO 内ライフサイクル
 
-1. 本体 `examples/workers` の DO に POST ルートを足し、`forward` / 明示サブリクエストの
-   どちらで POST が通るかを本体側で最小再現・緑化する(hayate 本体の research §5 に追記)。
-2. 緑化した経路を hayate-mcp の `route_to_session` に反映。
-3. その上で MCP Inspector / SDK クライアントから wss/https 接続を実測(v0.2 受け入れ基準)。
+同じ `forward` パターンでも **hayate-mcp の DO だけ** `internal error`(DO 側トレース無し)。
+counter repro との差分 2 候補のうち、
 
-**判断**: v0.2 は「GET SSE ストリーム(CPython で検証済み・テスト常設)」を確定分として出荷し、
-Workers + DO は本ログの未達を明記したまま継続。実機で緑になっていないものはチェックしない。
+- **候補 2(vendor バンドル汚染)は除外**: `.venv-workers` の pywin32 / win32com など
+  Windows ホスト専用パッケージを削り python_modules と揃えた**クリーンなバンドルでも
+  同じ `internal error`**。バンドル汚染は原因ではない。
+- **候補 1(anyio `Server` の DO 内実行)を確定**: `McpSession.__init__` が
+  `asyncio.ensure_future(server.run(...))` で**リクエストを跨いで生きる detached
+  バックグラウンドタスク**を起こす。Cloudflare の DO / Workers 実行モデルは、非同期処理を
+  リクエストコンテキスト内で await(または `ctx.waitUntil`)することを要求するため、
+  この寿命の長い task が isolate を hard-crash させ、Python 例外トレースの出ない
+  workerd レベルの `internal error` になる。**POST body でも id API でもバンドルでもなく、
+  「MCP SDK の永続接続前提の Server を bounded な DO リクエストで回す」という構造的ミスマッチ**。
+
+### 次アクション(v0.3、要設計変更)
+
+DO 内では detached タスクを使わず、**リクエストごとに Server を initialize → 1 メッセージ処理
+→ teardown する同期的経路**(バックグラウンド task 無し)にするか、`ctx.waitUntil` /
+DO hibernation で Server task を明示的に生かす。どちらも v0.1 の in-process transport とは
+別コードパスになるため、mount 側に「DO モード = per-request server」の分岐を設計してから着手する。
+その上で MCP Inspector / SDK クライアントから wss/https 接続を実測(受け入れ基準)。
+
+**判断**: v0.2 は「GET SSE ストリーム(CPython 検証済み・テスト常設)」を確定分として出荷済み。
+Workers + DO は **POST forward はシロ・バンドル汚染も除外・ブロッカーは anyio Server の DO 内
+ライフサイクルに確定**した状態で v0.3(要設計変更)に継続。実機で緑になっていないものはチェックしない。

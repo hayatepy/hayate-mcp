@@ -9,10 +9,10 @@ runs with the in-memory store. Cloudflare's own McpAgent uses the same shape.
 The session id *is* the Durable Object's own id string (``ctx.id``):
 initialize routes to a fresh object which reports its id as the
 ``Mcp-Session-Id``, and later requests reconstruct that object with
-``idFromString``. No id injection is needed. The outer app rebuilds the
-subrequest with its body read to bytes (a POST body stream the adapter has
-already touched cannot be replayed) and returns the object's streaming
-response — single JSON or SSE — as a platform passthrough.
+``idFromString``. No id injection is needed: the outer app forwards the
+original platform request via ``forward()`` (verified to carry POST bodies
+to a Durable Object), and the object's streaming response — single JSON or
+SSE — passes back through untouched.
 
 Note: ``mcp`` is imported lazily inside the functions here, never at module
 scope. On workerd the SDK's import chain (jsonschema/rpds) seeds entropy at
@@ -84,30 +84,18 @@ def mcp_durable_object(
 async def route_to_session(c: Context, binding: Any) -> Response:
     """Forward an MCP request to its session's Durable Object.
 
-    Initialize (no ``Mcp-Session-Id``) goes to a fresh object, which reports
-    its own id as the session id; later requests reconstruct that object with
-    ``idFromString``.
-
-    The request is rebuilt with its body read to bytes rather than forwarded
-    as-is: ``forward()`` re-sends the original platform request, but a POST
-    body stream that the outer app's adapter has already touched cannot be
-    replayed to a subrequest. The Durable Object's streaming response
-    (single JSON or an SSE stream) is returned as a platform passthrough.
+    Initialize (no ``Mcp-Session-Id``) goes to a fresh unique object, which
+    reports its own id as the session id; later requests reconstruct that
+    object with ``idFromString``. ``forward()`` re-sends the original platform
+    request — verified to carry POST bodies to a Durable Object — so the
+    object's streaming response (single JSON or SSE) passes through untouched.
     """
-    from hayate.adapters.workers import _PassthroughResponse
+    from hayate.adapters.workers import forward
 
-    raw = c.req.raw
-    session_id = raw.headers.get(_SESSION_HEADER)
+    session_id = c.req.raw.headers.get(_SESSION_HEADER)
     stub = (
         binding.get(binding.idFromString(session_id))
         if session_id
         else binding.get(binding.newUniqueId())
     )
-
-    body = await raw.bytes() if raw.method not in ("GET", "HEAD") else None
-    headers = {name: value for name, value in raw.headers}
-    result = await stub.fetch(raw.url.href, method=raw.method, headers=headers, body=body or None)
-    js_response = result.js_response
-    response = _PassthroughResponse(None, int(getattr(js_response, "status", None) or 200))
-    response.platform_response = js_response
-    return response
+    return await forward(c, stub)

@@ -180,13 +180,18 @@ hayate-mcp は HTTP 側でメッセージを受け、ストリーム経由で `S
 
 `hayate_mcp.workers`(`mcp_durable_object` + `route_to_session`)と
 `examples/workers/` を実装。構成はセッション別 DO ルーティング(session id = DO の
-`ctx.id`、outer app が `idFromString` で再構築)。**ローカル workerd で DO への
-サブリクエスト dispatch が workerd レベルの `internal error` になり未達**。
-道中で解決した障害(mcp の global/constructor scope import、DO クラス名)と
-未解決ブロッカー(POST ボディ付き DO サブリクエスト経路が本体 research §5 で未検証)は
-`docs/research/workers-do.md` に記録。CPython でのユニット(mount の session_id ピン止め)は
-テスト済みだが、`workers` モジュールは **experimental** として README に明記する。
-v0.3 で本体側の POST-body DO forward を先に緑化してから再挑戦する。
+`ctx.id`、outer app が `idFromString` で再構築)。**ローカル workerd で未達**。
+2026-07-23 に原因を確定(`docs/research/workers-do.md`):
+- **POST-body DO forward はシロ**(本体最小 repro で実証、本体 research §5 追記)。
+- **バンドル汚染も除外**(Windows 専用パッケージを削ったクリーンバンドルでも同症状)。
+- **確定ブロッカー = anyio `Server` の DO 内ライフサイクル**: `McpSession` の
+  `asyncio.ensure_future(server.run(...))` がリクエストを跨ぐ detached task を起こし、
+  DO 実行モデルに反して isolate が hard-crash → Python トレースの出ない `internal error`。
+  MCP SDK の永続接続前提 Server を bounded な DO リクエストで回す構造的ミスマッチ。
+途中で解決した障害(mcp の global/constructor scope import、DO クラス名)も同ログに記録。
+CPython ユニット(session_id ピン止め)はテスト済みだが、`workers` は **experimental**
+として README に明記済み。v0.3 で「DO モード = per-request server(detached task 無し)」を
+mount に設計してから再挑戦する。
 
 ### 決定済み(2026-07-22)
 
