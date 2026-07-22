@@ -9,6 +9,7 @@ v0.1 does not open, so they are dropped with a debug log.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import math
 import secrets
@@ -23,10 +24,14 @@ logger = logging.getLogger("hayate_mcp")
 
 
 class McpSession:
-    def __init__(self, server: Any, initialization_options: Any) -> None:
-        self.id = secrets.token_hex(16)
+    def __init__(self, server: Any, initialization_options: Any, *, id: str | None = None) -> None:
+        self.id = id if id is not None else secrets.token_hex(16)
         self.last_seen = time.monotonic()
         self._pending: dict[Any, asyncio.Future[JSONRPCMessage]] = {}
+        # Server-initiated traffic for the optional GET stream (v0.2). One
+        # stream per session; bounded so an unconsumed queue cannot grow.
+        self._outbound: asyncio.Queue[JSONRPCMessage | None] = asyncio.Queue(maxsize=256)
+        self._stream_claimed = False
 
         to_server_send, to_server_recv = anyio.create_memory_object_stream[
             SessionMessage | Exception
@@ -36,6 +41,7 @@ class McpSession:
         )
         self._to_server = to_server_send
         self._from_server = from_server_recv
+        self._from_server_send = from_server_send
         self._run_task = asyncio.ensure_future(
             server.run(to_server_recv, from_server_send, initialization_options)
         )
@@ -53,11 +59,30 @@ class McpSession:
                     if future is not None and not future.done():
                         future.set_result(item.message)
                 else:
-                    logger.debug(
-                        "dropping server-initiated message (no GET stream in v0.1): %s", root
-                    )
+                    try:
+                        self._outbound.put_nowait(item.message)
+                    except asyncio.QueueFull:
+                        logger.debug("outbound queue full; dropping %s", root)
         except anyio.EndOfStream:  # pragma: no cover - server shut down
             pass
+
+    def claim_stream(self) -> bool:
+        """Reserve the single GET stream slot (spec allows us to cap at one)."""
+        if self._stream_claimed:
+            return False
+        self._stream_claimed = True
+        return True
+
+    async def outbound_events(self):
+        """Server-initiated messages as SSE payload dicts, until close()."""
+        try:
+            while True:
+                message = await self._outbound.get()
+                if message is None:
+                    return
+                yield {"data": message.model_dump_json(by_alias=True, exclude_none=True)}
+        finally:
+            self._stream_claimed = False
 
     async def send_notification(self, message: JSONRPCMessage) -> None:
         await self._to_server.send(SessionMessage(message=message))
@@ -75,6 +100,8 @@ class McpSession:
     async def close(self) -> None:
         self._run_task.cancel()
         self._reader_task.cancel()
+        with contextlib.suppress(asyncio.QueueFull):
+            self._outbound.put_nowait(None)  # terminate the GET stream
         for future in self._pending.values():
             if not future.done():
                 future.cancel()

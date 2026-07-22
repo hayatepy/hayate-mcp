@@ -1,8 +1,10 @@
 """McpMount: the Streamable HTTP transport as a pure fetch handler.
 
 Spec: modelcontextprotocol.io, Streamable HTTP transport (2025-06-18 line).
-v0.1 answers every client request with a single JSON body; the optional GET
-SSE stream (server-initiated messages, resumability) is a 405 until v0.2.
+POST carries JSON-RPC and replies with a single JSON body; GET opens the
+optional server-initiated SSE stream (one per session); DELETE terminates
+a session. Resumability (Last-Event-ID) is out until it can live in the
+Durable Object store (DESIGN §4).
 """
 
 from __future__ import annotations
@@ -10,6 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 from hayate import Context, Request, Response, problem
+from hayate.sse import event_stream as sse_stream
 from mcp.types import JSONRPCMessage, JSONRPCRequest
 from pydantic import ValidationError
 
@@ -27,6 +30,7 @@ class McpMount:
         initialization_options: Any | None = None,
         trusted_origins: tuple[str, ...] | list[str] = (),
         store: MemorySessionStore | None = None,
+        session_id: str | None = None,
     ) -> None:
         if not path.startswith("/"):
             raise ValueError("path must start with '/'")
@@ -39,6 +43,10 @@ class McpMount:
         )
         self.trusted_origins = frozenset(trusted_origins)
         self.store = store if store is not None else MemorySessionStore()
+        # When this mount lives inside a per-session Durable Object, its
+        # identity is the DO's name: pin it so ``initialize`` returns that id
+        # and every later request routes back to the same object (DESIGN §4).
+        self.session_id = session_id
 
     # -- the core ----------------------------------------------------------------------
 
@@ -54,8 +62,9 @@ class McpMount:
             return await self._post(raw)
         if raw.method == "DELETE":
             return await self._delete(raw)
-        # GET would be the optional server-initiated SSE stream (v0.2).
-        return problem(405, title="Method Not Allowed", headers={"allow": "POST, DELETE"})
+        if raw.method == "GET":
+            return self._get(raw)
+        return problem(405, title="Method Not Allowed", headers={"allow": "GET, POST, DELETE"})
 
     # -- verbs -------------------------------------------------------------------------
 
@@ -74,7 +83,7 @@ class McpMount:
             isinstance(message.root, JSONRPCRequest) and message.root.method == "initialize"
         )
         if is_initialize:
-            session = McpSession(self.server, self.initialization_options)
+            session = McpSession(self.server, self.initialization_options, id=self.session_id)
             await self.store.add(session)
         else:
             session_id = raw.headers.get(SESSION_HEADER)
@@ -98,6 +107,27 @@ class McpMount:
         # Notifications (and client-side responses) get no reply body.
         await session.send_notification(message)
         return Response(None, status=202)
+
+    def _get(self, raw: Request) -> Response:
+        """The optional server-initiated SSE stream (one per session).
+
+        Resumability (Last-Event-ID) is deliberately not implemented in
+        v0.2: replay buffers belong with the Durable Object store, where
+        sessions survive isolate recycling (DESIGN §4).
+        """
+        session_id = raw.headers.get(SESSION_HEADER)
+        if session_id is None:
+            return problem(400, title=f"Missing {SESSION_HEADER} header")
+        session = self.store.get(session_id)
+        if session is None:
+            return problem(404, title="Session not found")
+        if not session.claim_stream():
+            return problem(409, title="A stream is already open for this session")
+        return Response(
+            sse_stream(session.outbound_events()),
+            status=200,
+            headers={"content-type": "text/event-stream", "cache-control": "no-cache"},
+        )
 
     async def _delete(self, raw: Request) -> Response:
         session_id = raw.headers.get(SESSION_HEADER)

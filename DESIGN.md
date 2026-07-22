@@ -117,7 +117,7 @@ hayate-mcp は HTTP 側でメッセージを受け、ストリーム経由で `S
 - 既定は in-memory(単一プロセス)。**Workers は Durable Object 実装**
   (本体 `@to_durable_object` を利用)— インスタンス揮発と多重化に耐える唯一の解で、
   Cloudflare の TS 実装(McpAgent)も DO を使う。
-- resumability(`Last-Event-ID`)は spec 上 optional。v0.2 で判断。
+- resumability(`Last-Event-ID`)は spec 上 optional。**判断(2026-07-23): v0.2 では非対応** — 再生バッファはセッションが isolate をまたいで生きる DO ストア側に置くのが正しい構造で、メモリストアに足しても本番で意味を成さないため(auth 本番実測でも isolate 揮発を確認)。DO 版と同時に再判断。
 
 ## 5. セキュリティ
 
@@ -172,9 +172,21 @@ hayate-mcp は HTTP 側でメッセージを受け、ストリーム経由で `S
 |---|---|---|
 | ~~**spike**~~ | **完了(2026-07-22)**: SDK import + echo ツールの in-process 一周を workerd で確認 | ✅ research/pyodide.md に記録。§6 は SDK ブリッジ一本で確定 |
 | ~~**v0.1**~~ | **完了(2026-07-22)**: McpMount(POST=JSON 単発 / DELETE / GET=405)+ Mcp-Session-Id + memory SessionStore(idle eviction)+ Origin 検証 | ✅ **MCP Inspector CLI から接続し tools/list・tools/call 実行を実測**(uvicorn)。✅ 公式 SDK クライアント(`streamable_http_client` + `ClientSession`)での実 HTTP 一周を E2E テストとして CI に常設。テスト 16。✅ **Claude Code 実機接続も実測(2026-07-23)**: `claude mcp add --transport http` → `claude mcp list` で Connected、ヘッドレス実行で echo ツールの呼び出しに成功。受け入れ基準は両実クライアントで完全達成 |
-| v0.2 | Workers + DO SessionStore(+ resumability 判断) | 同じサーバーコードが workerd で動き、Inspector から wss/https で接続できる |
+| v0.2 | **出荷(2026-07-23)**: GET SSE ストリーム(1 本/セッション、409 で多重拒否、close で終端。テスト 20)+ resumability 判断(§4)。Workers + DO SessionStore は**実装済みだが on-workerd 未達**(§11、research/workers-do.md) | GET SSE ✅。**Workers DO の受け入れ(同一コードが workerd で動き Inspector から接続)は未達のまま v0.3 へ持ち越し** |
 | v0.3 | hayate-auth 連携(OAuth / RFC 9728) | 認可済みクライアントのみ接続可。authless 構成も引き続き選択可 |
 | v1.0 | API 凍結 | 本体 v1.0 より後 |
+
+## 11. Workers + Durable Object の現状(2026-07-23、未達)
+
+`hayate_mcp.workers`(`mcp_durable_object` + `route_to_session`)と
+`examples/workers/` を実装。構成はセッション別 DO ルーティング(session id = DO の
+`ctx.id`、outer app が `idFromString` で再構築)。**ローカル workerd で DO への
+サブリクエスト dispatch が workerd レベルの `internal error` になり未達**。
+道中で解決した障害(mcp の global/constructor scope import、DO クラス名)と
+未解決ブロッカー(POST ボディ付き DO サブリクエスト経路が本体 research §5 で未検証)は
+`docs/research/workers-do.md` に記録。CPython でのユニット(mount の session_id ピン止め)は
+テスト済みだが、`workers` モジュールは **experimental** として README に明記する。
+v0.3 で本体側の POST-body DO forward を先に緑化してから再挑戦する。
 
 ### 決定済み(2026-07-22)
 

@@ -1,0 +1,12 @@
+name = "hayate-mcp-workers-example"
+main = "entry.py"
+compatibility_date = "2026-07-01"
+compatibility_flags = ["python_workers"]
+
+[[durable_objects.bindings]]
+name = "MCP_SESSION"
+class_name = "McpSession"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["McpSession"]

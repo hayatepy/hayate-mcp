@@ -6,10 +6,12 @@ a Streamable HTTP transport that bridges the official
 WHATWG Request/Response. The [@hono/mcp](https://www.npmjs.com/package/@hono/mcp)
 architecture, in Python.
 
-> **Status: alpha (0.1.x).** The transport serves MCP Inspector, Claude Code,
-> and the official SDK client today (single-JSON responses; the optional GET
-> SSE stream and Workers Durable Object sessions land in 0.2). The internal
-> design memo (Japanese, per project convention) lives in [DESIGN.md](DESIGN.md).
+> **Status: alpha (0.2.x).** The transport serves MCP Inspector, Claude Code,
+> and the official SDK client (single-JSON POST responses plus the optional
+> server-initiated GET SSE stream). The `hayate_mcp.workers` Durable Object
+> integration is **experimental** — implemented and unit-tested on CPython,
+> but not yet green on workerd (see [docs/research/workers-do.md](docs/research/workers-do.md)).
+> The internal design memo (Japanese) lives in [DESIGN.md](DESIGN.md).
 
 ```python
 from mcp.server.lowlevel import Server   # official SDK — define your tools here
@@ -38,8 +40,8 @@ claude mcp add my-tools --transport http http://127.0.0.1:8000/mcp
 | Verb | Behavior |
 |---|---|
 | POST | JSON-RPC request → single JSON response (`initialize` mints an `Mcp-Session-Id`); notifications → 202 |
+| GET | Server-initiated SSE stream (one per session; a second returns 409) |
 | DELETE | Explicit session termination |
-| GET | 405 until v0.2 (optional server-initiated SSE stream) |
 
 Plus spec-mandated Origin validation (DNS-rebinding defense) and an
 in-memory session store with idle eviction. Protocol handling — capabilities,

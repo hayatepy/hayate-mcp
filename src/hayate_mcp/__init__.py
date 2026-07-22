@@ -1,8 +1,33 @@
-"""hayate-mcp: mount an MCP server on a hayate app."""
+"""hayate-mcp: mount an MCP server on a hayate app.
 
-from .mount import McpMount
-from .session import MemorySessionStore
+Top-level names are resolved lazily (PEP 562) so that importing
+``hayate_mcp.workers`` on Cloudflare Workers does not eagerly pull in the
+``mcp`` SDK. The SDK's transitive dependency ``rpds`` seeds entropy at import
+via ``getRandomValues``, which workerd forbids during global-scope
+evaluation; deferring keeps the Workers entry module importable at global
+scope, and CPython users still write ``from hayate_mcp import McpMount``.
+"""
 
-__version__ = "0.1.0"
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+__version__ = "0.2.0"
 
 __all__ = ["McpMount", "MemorySessionStore", "__version__"]
+
+if TYPE_CHECKING:
+    from .mount import McpMount
+    from .session import MemorySessionStore
+
+
+def __getattr__(name: str):
+    if name == "McpMount":
+        from .mount import McpMount
+
+        return McpMount
+    if name == "MemorySessionStore":
+        from .session import MemorySessionStore
+
+        return MemorySessionStore
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

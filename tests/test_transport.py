@@ -54,10 +54,9 @@ async def test_delete_terminates_the_session(mount):
     assert gone.status == 404
 
 
-async def test_get_is_405_until_v02(mount):
+async def test_get_without_session_is_400(mount):
     res = await mount.fetch(rpc_request("", method="GET"))
-    assert res.status == 405
-    assert res.headers.get("allow") == "POST, DELETE"
+    assert res.status == 400
 
 
 async def test_cross_origin_is_403(mount):
