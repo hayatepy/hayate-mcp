@@ -51,14 +51,13 @@ sync が再実行されて失敗する。)
 
 - Streamable HTTP transport 実装後の MCP Inspector / Claude Code 実クライアント接続(v0.1 受け入れ基準)。
 - ~~Workers 本番(deploy)でのバンドル制限・コールドスタート・DO SessionStore(v0.2)。~~
-  **確定(2026-07-23、hayate-auth AS spike の本番実測)**: バンドルサイズは gzip 後
-  3 MiB 内で **Free でも upload は通る**。しかし **import が本番に載らない**:
-  リクエスト時 import は Python Workers ランタイムの CPU リミッター
-  (`introspection.CpuLimitExceeded`、~2 s)で死に、グローバル import は deploy
-  validator の `Top-level await in module is unsettled`(startup 予算超過)で拒否。
-  vendored pydantic を外してランタイム内蔵に任せても残チェーンだけで超過。
-  **ローカル workerd は制限なしで両方式とも動く**のと対照的 — 本番 Python Workers
-  での mcp SDK は 2026-07 時点で未達(詳細: hayate-auth
-  research/authorization-server.md §5.5)。残る手: Workers Paid の `[limits] cpu_ms`
-  がランタイムリミッターに効くかの 1 実験 / Cloudflare のパッケージ内蔵拡充待ち。
+  **確定(2026-07-23、hayate-auth AS spike の本番実測 — 同日 Paid で決着)**:
+  バンドルサイズは gzip 後 3 MiB 内で Free でも upload は通る。
+  **遅延(リクエスト時)import + Workers Paid が本番の正解形** — Python Workers の
+  ランタイム CPU リミッター(`introspection.CpuLimitExceeded`)はプラン準拠で、
+  Free(~2 s)では mcp チェーンの import が死ぬが **Paid は既定予算のまま完走**
+  (cold で import ~3 s CPU、PRM cold 実測 3.6〜7.4 s)。グローバル import は
+  deploy validator の `Top-level await in module is unsettled`(startup 予算、
+  プラン非依存)で不可のまま。本番フル一周(AS フロー → Bearer initialize →
+  Inspector CLI tools/call)は hayate-auth research/authorization-server.md §5.5。
 - FastMCP 定義ツールの SDK `Server` への変換受け入れ(DESIGN §3.2 の要検証項目)。
