@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 __all__ = ["Authorization", "McpMount", "MemorySessionStore", "__version__"]
 

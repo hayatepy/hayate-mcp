@@ -246,9 +246,9 @@ class McpMount:
         return origin == raw.url.origin or origin in self.trusted_origins
 
     def _metadata_path(self) -> str:
-        from .authorization import WELL_KNOWN_PRM
-
-        return WELL_KNOWN_PRM
+        # RFC 9728 §3.1 path-insertion form, derived from the resource
+        # identifier (matches the URL the 401 WWW-Authenticate advertises).
+        return self.authorization.metadata_path
 
     def _serve_metadata(self) -> Response:
         return Response(

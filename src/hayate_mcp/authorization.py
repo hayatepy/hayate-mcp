@@ -3,9 +3,9 @@
 Normative: MCP Authorization (2025-06-18) + RFC 9728 (OAuth 2.0 Protected
 Resource Metadata) + RFC 6750 (Bearer). An authorized MCP server:
 
-- serves its Protected Resource Metadata at
-  ``/.well-known/oauth-protected-resource`` (RFC 9728), naming the
-  authorization server(s) a client should use;
+- serves its Protected Resource Metadata at the RFC 9728 §3.1 well-known
+  URI (``/.well-known/oauth-protected-resource`` with the resource's path
+  inserted after it), naming the authorization server(s) a client should use;
 - rejects unauthenticated requests with ``401`` and a ``WWW-Authenticate:
   Bearer resource_metadata="<that URL>"`` header, so the client can discover
   where to get a token (RFC 9728 §5.1).
@@ -21,6 +21,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlsplit
 
 WELL_KNOWN_PRM = "/.well-known/oauth-protected-resource"
 
@@ -49,7 +50,18 @@ class Authorization:
 
     @property
     def metadata_url(self) -> str:
-        return self.resource.rstrip("/") + WELL_KNOWN_PRM
+        """RFC 9728 §3.1: insert the well-known segment between host and the
+        resource's path — ``https://h/mcp`` -> ``https://h{WELL_KNOWN_PRM}/mcp``.
+        (Until 0.5.x this wrongly appended the segment after the path.)"""
+        parts = urlsplit(self.resource)
+        origin = f"{parts.scheme}://{parts.netloc}"
+        path = parts.path.rstrip("/")
+        return f"{origin}{WELL_KNOWN_PRM}{path}"
+
+    @property
+    def metadata_path(self) -> str:
+        """The path component of ``metadata_url`` (what a same-origin mount serves)."""
+        return urlsplit(self.metadata_url).path
 
     def www_authenticate(self, error: str | None = None) -> str:
         parts = [f'resource_metadata="{self.metadata_url}"']

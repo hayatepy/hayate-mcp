@@ -220,6 +220,7 @@ initialize / tools/list / tools/call のどれも単発 JSON-RPC で処理でき
 | v0.3 | **出荷(2026-07-23)**: `stateless=True` モード(§6.1)。**Cloudflare Workers で緑化**(DO 不要) | ✅ **workerd 上で MCP フル一周(initialize → tools/list → tools/call)を curl と MCP Inspector CLI で実測**。テスト 27(stateless 7 追加) |
 | v0.4 | **出荷(2026-07-23)**: OAuth 2.0 Resource Server 側(RFC 9728 Protected Resource Metadata + Bearer 検証 + 401/`WWW-Authenticate`)。§5 | ✅ 認可済みクライアントのみ接続可・authless 構成も選択可。テスト 35(authorization 8 追加)。AS 側(トークン発行)は hayate-auth の将来機能 |
 | v0.5 | **出荷(2026-07-23)**: 最新 stable **2025-11-25** 準拠(SDK 1.28.1)+ `MCP-Protocol-Version` ヘッダ検証(§2、§6.2) | ✅ CPython は 2025-11-25 ネゴ、Workers は wasm 制約で 2025-06-18(§6.2)。両ランタイムで無効版 400 を実測。テスト 42(protocol-version 7 追加) |
+| v0.6 | **出荷(2026-07-23)**: PRM の well-known URI を **RFC 9728 §3.1 の path-insertion 形式に是正**(`https://h/mcp` → `https://h/.well-known/oauth-protected-resource/mcp`)。0.5.x までは well-known をパスの後ろに連結した URL を広告しつつルート形式を serve しており、広告 URL が 404 を指していた(auth の AS spike on workerd が発見。クライアントはフォールバック探索で動いていた) | ✅ 広告 URL と serve パスの一致をパス付き / パス無し resource の両方でテスト固定。旧 2 形式は 404。テスト 44 |
 | v1.0 | API 凍結 | 本体 v1.0 より後 |
 
 ## 11. Workers 対応(2026-07-23、緑化)

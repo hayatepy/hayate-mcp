@@ -97,3 +97,52 @@ async def test_no_authorization_config_means_open_access():
     # No metadata route when unauthenticated.
     meta = await mount.fetch(rpc_request("", method="GET", path=METADATA_PATH))
     assert meta.status == 404
+
+
+PATHED_RESOURCE = "https://app.example.com/mcp"
+INSERTED_PATH = "/.well-known/oauth-protected-resource/mcp"
+
+
+def pathed_mount() -> McpMount:
+    return McpMount(
+        build_server(),
+        stateless=True,
+        authorization=Authorization(
+            resource=PATHED_RESOURCE,
+            authorization_servers=[AS],
+            verify_token=_verify,
+        ),
+    )
+
+
+async def test_pathed_resource_uses_rfc9728_path_insertion():
+    """RFC 9728 §3.1 puts the well-known segment between host and path.
+    Until 0.5.x it was appended after the path while the mount served the
+    root form, so the advertised URL pointed at a 404 (found by the
+    hayate-auth AS spike on workerd)."""
+    mount = pathed_mount()
+
+    res = await mount.fetch(rpc_request("", method="GET", path=INSERTED_PATH))
+    assert res.status == 200
+    assert (await res.json())["resource"] == PATHED_RESOURCE
+
+    denied = await mount.fetch(rpc_request(INITIALIZE))
+    www = denied.headers.get("www-authenticate")
+    assert f'resource_metadata="https://app.example.com{INSERTED_PATH}"' in www
+
+    # Both pre-0.6 wrong shapes are gone.
+    appended = await mount.fetch(
+        rpc_request("", method="GET", path="/mcp/.well-known/oauth-protected-resource")
+    )
+    assert appended.status == 404
+    root = await mount.fetch(rpc_request("", method="GET", path=METADATA_PATH))
+    assert root.status == 404
+
+
+async def test_register_exposes_the_inserted_metadata_route():
+    mount = pathed_mount()
+    app = Hayate()
+    mount.register(app)
+    res = await app.request(INSERTED_PATH)
+    assert res.status == 200
+    assert (await res.json())["resource"] == PATHED_RESOURCE

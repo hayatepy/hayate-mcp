@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "hayate-mcp"
-version = "0.5.0"
+version = "0.6.0"
 description = "Mount an MCP server on a hayate app: Streamable HTTP transport bridging the official python-sdk"
 readme = "README.md"
 requires-python = ">=3.12"
