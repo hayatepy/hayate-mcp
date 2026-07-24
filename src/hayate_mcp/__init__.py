@@ -12,13 +12,17 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 __all__ = [
     "Authorization",
     "LazyMcpMount",
     "McpMount",
     "MemorySessionStore",
+    "ToolError",
+    "WorkerMcpMount",
+    "WorkerMcpServer",
+    "WorkerTool",
     "__version__",
     "get_principal",
 ]
@@ -29,6 +33,7 @@ if TYPE_CHECKING:
     from .mount import McpMount
     from .principal import get_principal
     from .session import MemorySessionStore
+    from .worker import ToolError, WorkerMcpMount, WorkerMcpServer, WorkerTool
 
 
 def __getattr__(name: str) -> Any:
@@ -52,4 +57,13 @@ def __getattr__(name: str) -> Any:
         from .principal import get_principal
 
         return get_principal
+    if name in {"ToolError", "WorkerMcpMount", "WorkerMcpServer", "WorkerTool"}:
+        from .worker import ToolError, WorkerMcpMount, WorkerMcpServer, WorkerTool
+
+        return {
+            "ToolError": ToolError,
+            "WorkerMcpMount": WorkerMcpMount,
+            "WorkerMcpServer": WorkerMcpServer,
+            "WorkerTool": WorkerTool,
+        }[name]
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
