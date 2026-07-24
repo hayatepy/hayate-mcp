@@ -1,6 +1,6 @@
 """MCP Authorization: the OAuth 2.0 Resource Server side (DESIGN §5, v0.4).
 
-Normative: MCP Authorization (2025-06-18) + RFC 9728 (OAuth 2.0 Protected
+Normative: MCP Authorization (2025-11-25) + RFC 9728 (OAuth 2.0 Protected
 Resource Metadata) + RFC 6750 (Bearer). An authorized MCP server:
 
 - serves its Protected Resource Metadata at the RFC 9728 §3.1 well-known
@@ -23,7 +23,10 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlsplit
 
+from .principal import Principal
+
 WELL_KNOWN_PRM = "/.well-known/oauth-protected-resource"
+LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 # verify_token: the raw Bearer credential -> claims dict if valid, else None.
 VerifyToken = Callable[[str], Awaitable[dict[str, Any] | None]]
@@ -35,7 +38,58 @@ class Authorization:
     authorization_servers: list[str]
     verify_token: VerifyToken
     scopes_supported: list[str] = field(default_factory=list)
+    required_scopes: list[str] = field(default_factory=list)
     bearer_methods_supported: list[str] = field(default_factory=lambda: ["header"])
+
+    def __post_init__(self) -> None:
+        resource = urlsplit(self.resource)
+        try:
+            _resource_port = resource.port
+        except ValueError:
+            raise ValueError("resource contains an invalid port") from None
+        if (
+            resource.scheme not in ("https", "http")
+            or not resource.netloc
+            or resource.fragment
+            or resource.username
+            or resource.password
+        ):
+            raise ValueError("resource must be an absolute HTTP(S) URI without a fragment")
+        if resource.scheme == "http" and resource.hostname not in LOOPBACK_HOSTS:
+            raise ValueError("resource must use https except on loopback hosts")
+        self.resource = resource._replace(
+            scheme=resource.scheme.lower(),
+            netloc=resource.netloc.lower(),
+        ).geturl()
+        if not self.authorization_servers:
+            raise ValueError("authorization_servers must contain at least one issuer")
+        canonical_servers: list[str] = []
+        for value in self.authorization_servers:
+            issuer = urlsplit(value)
+            try:
+                _issuer_port = issuer.port
+            except ValueError:
+                raise ValueError("authorization server issuer contains an invalid port") from None
+            if (
+                issuer.scheme not in ("https", "http")
+                or not issuer.netloc
+                or issuer.query
+                or issuer.fragment
+                or issuer.username
+                or issuer.password
+            ):
+                raise ValueError("authorization server issuers must be absolute HTTP(S) URIs")
+            if issuer.scheme == "http" and issuer.hostname not in LOOPBACK_HOSTS:
+                raise ValueError("authorization server issuers must use https except on loopback")
+            canonical_servers.append(
+                issuer._replace(
+                    scheme=issuer.scheme.lower(),
+                    netloc=issuer.netloc.lower(),
+                ).geturl()
+            )
+        self.authorization_servers = canonical_servers
+        if self.scopes_supported and not set(self.required_scopes) <= set(self.scopes_supported):
+            raise ValueError("required_scopes must be included in scopes_supported")
 
     def metadata(self) -> dict[str, Any]:
         """The RFC 9728 Protected Resource Metadata document."""
@@ -63,17 +117,52 @@ class Authorization:
         """The path component of ``metadata_url`` (what a same-origin mount serves)."""
         return urlsplit(self.metadata_url).path
 
-    def www_authenticate(self, error: str | None = None) -> str:
+    def www_authenticate(
+        self, error: str | None = None, *, scopes: list[str] | tuple[str, ...] = ()
+    ) -> str:
         parts = [f'resource_metadata="{self.metadata_url}"']
         if error is not None:
             parts.insert(0, f'error="{error}"')
+        if scopes:
+            parts.append(f'scope="{" ".join(scopes)}"')
         return "Bearer " + ", ".join(parts)
 
-    async def authenticate(self, authorization_header: str | None) -> dict[str, Any] | None:
-        """Return verified claims, or None if the credential is absent/invalid."""
+    async def authenticate(self, authorization_header: str | None) -> Principal | None:
+        """Return normalized verified claims, or None if absent/invalid."""
         if authorization_header is None:
             return None
         scheme, _, credential = authorization_header.partition(" ")
-        if scheme.lower() != "bearer" or not credential:
+        credential = credential.strip()
+        if (
+            scheme.lower() != "bearer"
+            or not credential
+            or any(character.isspace() for character in credential)
+        ):
             return None
-        return await self.verify_token(credential.strip())
+        claims = await self.verify_token(credential)
+        if claims is None:
+            return None
+        principal = dict(claims)
+        subject = (
+            principal.get("subject")
+            or principal.get("sub")
+            or principal.get("user_id")
+            or principal.get("client_id")
+        )
+        if not isinstance(subject, str) or not subject:
+            return None
+        scopes = principal.get("scopes", principal.get("scope", []))
+        if isinstance(scopes, str):
+            scopes = scopes.split()
+        if not isinstance(scopes, list) or not all(isinstance(scope, str) for scope in scopes):
+            return None
+        principal["subject"] = subject
+        principal["scopes"] = scopes
+        return principal
+
+    def missing_scopes(
+        self, principal: Principal, required: list[str] | tuple[str, ...] | None = None
+    ) -> list[str]:
+        expected = self.required_scopes if required is None else required
+        granted = principal["scopes"]
+        return [scope for scope in expected if scope not in granted]

@@ -1,5 +1,7 @@
 """Streamable HTTP transport against the pure fetch core."""
 
+from hayate import Request
+
 from conftest import INITIALIZE, LIST_TOOLS, call_tool, handshake, rpc_request
 
 
@@ -77,6 +79,71 @@ async def test_batch_bodies_are_rejected(mount):
 async def test_invalid_json_is_400(mount):
     res = await mount.fetch(rpc_request("{not json"))
     assert res.status == 400
+
+
+async def test_non_standard_json_constants_are_rejected(mount):
+    payload = (
+        '{"jsonrpc":"2.0","id":3,"method":"tools/call",'
+        '"params":{"name":"echo","arguments":{"text":NaN}}}'
+    )
+    res = await mount.fetch(rpc_request(payload))
+    assert res.status == 400
+
+
+async def test_post_rejects_non_utf8_json(mount):
+    res = await mount.fetch(
+        Request(
+            "http://localhost/mcp",
+            method="POST",
+            headers={
+                "content-type": "application/json",
+                "accept": "application/json, text/event-stream",
+            },
+            body=b'{"jsonrpc":"2.0","method":"notifications/\xff"}',
+        )
+    )
+    assert res.status == 400
+
+
+async def test_post_requires_json_content_type(mount):
+    res = await mount.fetch(rpc_request(INITIALIZE, headers={"content-type": "text/plain"}))
+    assert res.status == 415
+
+
+async def test_post_requires_json_and_sse_accept_types(mount):
+    res = await mount.fetch(rpc_request(INITIALIZE, headers={"accept": "application/json"}))
+    assert res.status == 406
+
+
+async def test_post_does_not_accept_a_zero_quality_media_type(mount):
+    res = await mount.fetch(
+        rpc_request(
+            INITIALIZE,
+            headers={"accept": "application/json;q=0, text/event-stream"},
+        )
+    )
+    assert res.status == 406
+
+    invalid_quality = await mount.fetch(
+        rpc_request(
+            INITIALIZE,
+            headers={"accept": "application/json;q=2, text/event-stream"},
+        )
+    )
+    assert invalid_quality.status == 406
+
+
+async def test_get_requires_sse_accept_type(mount):
+    session_id = await handshake(mount)
+    res = await mount.fetch(
+        rpc_request(
+            "",
+            method="GET",
+            session_id=session_id,
+            headers={"accept": "application/json"},
+        )
+    )
+    assert res.status == 406
 
 
 async def test_unknown_path_is_404(mount):

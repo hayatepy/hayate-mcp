@@ -1,5 +1,6 @@
 """MCP Authorization (RFC 9728 Protected Resource Metadata + Bearer)."""
 
+import pytest
 from hayate import Hayate
 
 from conftest import INITIALIZE, build_server, rpc_request
@@ -12,6 +13,33 @@ METADATA_PATH = "/.well-known/oauth-protected-resource"
 
 async def _verify(token: str):
     return {"sub": "user-1", "scope": "mcp"} if token == "good-token" else None
+
+
+def test_authorization_canonicalizes_secure_resource_and_issuer():
+    authorization = Authorization(
+        resource="HTTPS://MCP.EXAMPLE.COM/mcp",
+        authorization_servers=["HTTPS://AUTH.EXAMPLE.COM/tenant/"],
+        verify_token=_verify,
+    )
+    assert authorization.resource == "https://mcp.example.com/mcp"
+    assert authorization.authorization_servers == ["https://auth.example.com/tenant/"]
+
+
+@pytest.mark.parametrize(
+    ("resource", "issuer"),
+    [
+        ("http://mcp.example.com/mcp", AS),
+        (RESOURCE, "http://auth.example.com"),
+        (RESOURCE, "https://user@auth.example.com"),
+    ],
+)
+def test_authorization_rejects_insecure_or_credentialed_endpoints(resource, issuer):
+    with pytest.raises(ValueError):
+        Authorization(
+            resource=resource,
+            authorization_servers=[issuer],
+            verify_token=_verify,
+        )
 
 
 def authorized_mount() -> McpMount:
@@ -44,6 +72,13 @@ async def test_metadata_is_public_no_token_needed():
     assert res.status == 200
 
 
+async def test_metadata_only_accepts_get():
+    mount = authorized_mount()
+    res = await mount.fetch(rpc_request({}, method="POST", path=METADATA_PATH))
+    assert res.status == 405
+    assert res.headers.get("allow") == "GET"
+
+
 async def test_request_without_token_is_401_with_www_authenticate():
     mount = authorized_mount()
     res = await mount.fetch(rpc_request(INITIALIZE))
@@ -57,11 +92,18 @@ async def test_invalid_token_is_401():
     mount = authorized_mount()
     res = await mount.fetch(rpc_request(INITIALIZE, headers={"authorization": "Bearer wrong"}))
     assert res.status == 401
+    assert 'error="invalid_token"' in res.headers.get("www-authenticate")
 
 
 async def test_malformed_authorization_header_is_401():
     mount = authorized_mount()
-    for header in ("good-token", "Basic good-token", "Bearer", "Bearer "):
+    for header in (
+        "good-token",
+        "Basic good-token",
+        "Bearer",
+        "Bearer ",
+        "Bearer good-token extra",
+    ):
         res = await mount.fetch(rpc_request(INITIALIZE, headers={"authorization": header}))
         assert res.status == 401, header
 
@@ -71,6 +113,52 @@ async def test_valid_token_is_accepted():
     res = await mount.fetch(rpc_request(INITIALIZE, headers={"authorization": "Bearer good-token"}))
     assert res.status == 200
     assert (await res.json())["result"]["serverInfo"]["name"] == "test-tools"
+
+
+async def test_required_scope_is_enforced_and_advertised():
+    mount = McpMount(
+        build_server(),
+        stateless=True,
+        authorization=Authorization(
+            resource=RESOURCE,
+            authorization_servers=[AS],
+            verify_token=_verify,
+            scopes_supported=["mcp", "documents:read"],
+            required_scopes=["documents:read"],
+        ),
+    )
+    res = await mount.fetch(rpc_request(INITIALIZE, headers={"authorization": "Bearer good-token"}))
+    assert res.status == 403
+    challenge = res.headers.get("www-authenticate")
+    assert 'error="insufficient_scope"' in challenge
+    assert 'scope="documents:read"' in challenge
+
+
+async def test_tool_scope_is_enforced():
+    mount = McpMount(
+        build_server(),
+        stateless=True,
+        authorization=Authorization(
+            resource=RESOURCE,
+            authorization_servers=[AS],
+            verify_token=_verify,
+            scopes_supported=["mcp", "documents:read"],
+        ),
+        tool_scopes={"echo": ["documents:read"]},
+    )
+    res = await mount.fetch(
+        rpc_request(
+            {
+                "jsonrpc": "2.0",
+                "id": 9,
+                "method": "tools/call",
+                "params": {"name": "echo", "arguments": {"text": "secret"}},
+            },
+            headers={"authorization": "Bearer good-token"},
+        )
+    )
+    assert res.status == 403
+    assert 'scope="documents:read"' in res.headers.get("www-authenticate")
 
 
 async def test_register_exposes_the_metadata_route():
@@ -85,7 +173,13 @@ async def test_register_exposes_the_metadata_route():
     denied = await app.request("/mcp", method="POST", json=INITIALIZE)
     assert denied.status == 401
     ok = await app.request(
-        "/mcp", method="POST", json=INITIALIZE, headers={"authorization": "Bearer good-token"}
+        "/mcp",
+        method="POST",
+        json=INITIALIZE,
+        headers={
+            "accept": "application/json, text/event-stream",
+            "authorization": "Bearer good-token",
+        },
     )
     assert ok.status == 200
 

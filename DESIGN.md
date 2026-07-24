@@ -126,7 +126,7 @@ hayate-mcp は HTTP 側でメッセージを受け、ストリーム経由で `S
   localhost バインド時の注意も README に明記。
 - v0.1 は authless(spec 上 optional)。
 - **v0.4: OAuth 2.0 Resource Server 側を実装(出荷済み)**。`McpMount(authorization=Authorization(...))`
-  で MCP Authorization(2025-06-18)+ RFC 9728 に対応:
+  で MCP Authorization(2025-11-25)+ RFC 9728 に対応:
   - `/.well-known/oauth-protected-resource` に Protected Resource Metadata(RFC 9728)を提供
     (`resource` / `authorization_servers` / `bearer_methods_supported` / `scopes_supported`)。
     このエンドポイントはトークン不要の公開ディスカバリ。
@@ -171,13 +171,17 @@ initialize / tools/list / tools/call のどれも単発 JSON-RPC で処理でき
 
 ### 6.2 リビジョン追従と Workers の SDK 制約(v0.5、2026-07-23)
 
-- **依存フロアは `mcp>=1.12`**(ハード `>=1.28` にしない)。理由:
-  - **CPython/ASGI** は最新 SDK 1.28.1 に解決 → `LATEST_PROTOCOL_VERSION = 2025-11-25`。
+- **依存は runtime marker で分離**:
+  `mcp>=1.28.1,<2; sys_platform != "emscripten"` /
+  `mcp>=1.12,<2; sys_platform == "emscripten"`。理由:
+  - **CPython/ASGI** は SDK 1.28.1 以上を保証 → `LATEST_PROTOCOL_VERSION = 2025-11-25`。
   - **Workers(Pyodide)** は現状 mcp 1.28 を vendor **できない**: 1.28 が要求する新しい
     pydantic に対応する **pydantic-core の wasm wheel が Pyodide index(0.28.3)に無い**
     (実測: 解決不能)。pywrangler は wasm 互換の最新(mcp 1.12.4、2025-06-18)に解決する。
   - → 「最新準拠」は**ランタイム依存**: CPython は 2025-11-25、Workers は当面 2025-06-18。
-    Pyodide が pydantic-core を更新したら Workers も 2025-11-25 に上がる(フロアはそのまま)。
+    Pyodide が pydantic-core を更新したら Workers marker のフロアも 1.28.1 に上げる。
+- SDK v2 は現時点では pre-stable かつ transport API が非互換なため `<2` で
+  隔離する。stable 後に別変更として追随する。
 - **`MCP-Protocol-Version` ヘッダ検証**は SDK の `SUPPORTED_PROTOCOL_VERSIONS` を使うので、
   どちらのランタイムでも「そのランタイムの SDK が話せる版」を正しく受理/拒否する(両方で実測)。
 - **2026-07-28 RC(stateless core)**: initialize ハンドシェイクと Mcp-Session-Id を transport
@@ -221,6 +225,7 @@ initialize / tools/list / tools/call のどれも単発 JSON-RPC で処理でき
 | v0.4 | **出荷(2026-07-23)**: OAuth 2.0 Resource Server 側(RFC 9728 Protected Resource Metadata + Bearer 検証 + 401/`WWW-Authenticate`)。§5 | ✅ 認可済みクライアントのみ接続可・authless 構成も選択可。テスト 35(authorization 8 追加)。AS 側(トークン発行)は hayate-auth の将来機能 |
 | v0.5 | **出荷(2026-07-23)**: 最新 stable **2025-11-25** 準拠(SDK 1.28.1)+ `MCP-Protocol-Version` ヘッダ検証(§2、§6.2) | ✅ CPython は 2025-11-25 ネゴ、Workers は wasm 制約で 2025-06-18(§6.2)。両ランタイムで無効版 400 を実測。テスト 42(protocol-version 7 追加) |
 | v0.6 | **出荷(2026-07-23)**: PRM の well-known URI を **RFC 9728 §3.1 の path-insertion 形式に是正**(`https://h/mcp` → `https://h/.well-known/oauth-protected-resource/mcp`)。0.5.x までは well-known をパスの後ろに連結した URL を広告しつつルート形式を serve しており、広告 URL が 404 を指していた(auth の AS spike on workerd が発見。クライアントはフォールバック探索で動いていた) | ✅ 広告 URL と serve パスの一致をパス付き / パス無し resource の両方でテスト固定。旧 2 形式は 404。テスト 44 |
+| v0.7 | **出荷準備(2026-07-24)**: MCP 2025-11-25 transport media 契約、Principal/context、global/tool scope、session owner binding、secure URI、LazyMcpMount、`py.typed`、CPython SDK `>=1.28.1,<2` | 公式 SDK E2E を含む 60 テスト。strict mypy 6 files。FolioMCP 相当の AS→resource→tool principal 横断試験 ✅ |
 | v1.0 | API 凍結 | 本体 v1.0 より後 |
 
 ## 11. Workers 対応(2026-07-23、緑化)

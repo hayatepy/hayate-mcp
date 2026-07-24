@@ -6,8 +6,9 @@ a Streamable HTTP transport that bridges the official
 WHATWG Request/Response. The [@hono/mcp](https://www.npmjs.com/package/@hono/mcp)
 architecture, in Python.
 
-> **Status: alpha (0.6.x).** Tracks the SDK's latest revision — **2025-11-25**
-> on CPython/ASGI (mcp ≥ 1.28), with `MCP-Protocol-Version` header validation.
+> **Status: alpha (0.7.x).** Tracks the latest stable revision —
+> **MCP 2025-11-25** on CPython/ASGI (official SDK ≥ 1.28.1 and < 2), with
+> `MCP-Protocol-Version` header validation.
 > Serves MCP Inspector, Claude Code, and the official SDK client — single-JSON
 > POST plus the optional server-initiated GET SSE stream on ASGI, and a
 > **stateless mode that runs on Cloudflare Workers** (verified on workerd and
@@ -47,7 +48,10 @@ claude mcp add my-tools --transport http http://127.0.0.1:8000/mcp
 | GET | Server-initiated SSE stream (one per session; a second returns 409) |
 | DELETE | Explicit session termination |
 
-Plus spec-mandated Origin validation (DNS-rebinding defense) and an
+POST requests must use `Content-Type: application/json` and advertise both
+`application/json` and `text/event-stream` in `Accept`; notifications and
+client responses receive an empty 202. GET must advertise SSE. Plus
+spec-mandated Origin validation (DNS-rebinding defense) and an
 in-memory session store with idle eviction. Protocol handling — capabilities,
 tool dispatch, versioning — stays entirely in the official SDK: this package
 is transport only, so spec revisions ride SDK upgrades.
@@ -55,16 +59,20 @@ is transport only, so spec revisions ride SDK upgrades.
 ## Authorization (OAuth 2.0 Resource Server)
 
 Pass an `Authorization` to require Bearer tokens and serve RFC 9728 Protected
-Resource Metadata (MCP Authorization, 2025-06-18):
+Resource Metadata (MCP Authorization, 2025-11-25):
 
 ```python
 from hayate_mcp import Authorization, McpMount
 
 McpMount(server, authorization=Authorization(
-    resource="https://mcp.example.com",
+    resource="https://mcp.example.com/mcp",
     authorization_servers=["https://auth.example.com"],
     verify_token=verify,   # async (token) -> claims | None
-)).register(app)
+    scopes_supported=["mcp", "documents:read"],
+    required_scopes=["mcp"],
+), tool_scopes={
+    "read_document": ["documents:read"],
+}).register(app)
 ```
 
 Unauthenticated requests get `401` with
@@ -72,6 +80,23 @@ Unauthenticated requests get `401` with
 so clients (Claude, Inspector) discover the authorization server. Token
 *issuance* is the AS's job — point `verify_token` at hayate-auth or any
 RFC 6749 server.
+
+Verified claims are normalized (`subject`, `client_id`, `scopes`) and are
+available inside tool handlers:
+
+```python
+from hayate_mcp import get_principal
+
+@server.call_tool()
+async def call_tool(name, arguments):
+    principal = get_principal()
+    assert principal is not None
+    # principal["subject"], principal["scopes"], ...
+```
+
+Insufficient global or per-tool scopes return 403 with the MCP 2025-11-25
+`WWW-Authenticate` step-up challenge. Stateful sessions are bound to the
+creating `(issuer, client_id, subject)` identity.
 
 ## On Cloudflare Workers
 
@@ -93,7 +118,8 @@ See [examples/workers](examples/workers) (verified on workerd). Trade-off:
 stateless has no server-initiated GET stream and no cross-request session
 state — use the default stateful mode on ASGI ([examples/echo](examples/echo))
 when you need those. (Import `mcp` lazily inside a handler on Workers, never
-at global scope — its dependency chain seeds entropy at import.)
+at global scope — or use `LazyMcpMount`, whose factory receives the request
+context and imports/builds the SDK server on first use.)
 
 Production verification uses a Workers Paid account: the cold lazy import of
 the MCP dependency chain takes roughly 3 seconds of CPU and exceeds the Free
@@ -101,6 +127,12 @@ plan's Python runtime limiter. The application itself fits the Free plan's
 compressed bundle-size limit, but the SDK import does not complete there.
 Deployment measurements and the account/plan traps are recorded in
 [docs/research/pyodide.md](docs/research/pyodide.md).
+
+The Emscripten dependency floor remains at SDK 1.12 because the current
+Pyodide index cannot install the `pydantic-core` wheel required by SDK 1.28.1.
+That runtime therefore negotiates 2025-06-18 until the wheel is available;
+CPython is pinned to the complete 2025-11-25 line. SDK v2 is intentionally
+excluded because it is still pre-stable and changes the transport API.
 
 ## Why
 
