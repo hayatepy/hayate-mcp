@@ -26,7 +26,7 @@ dependencies = [
   "jsonschema>=4.20,<5; sys_platform == 'emscripten'",
   # pywrangler 1.15 resolves against the ABI-compatible Pyodide 0.28.3
   # index, whose rpds wasm wheel is 0.23.1.
-  "rpds-py==0.23.1; sys_platform == 'emscripten'",
+  "rpds-py==2026.6.3; sys_platform == 'emscripten'",
 ]
 
 [project.urls]
