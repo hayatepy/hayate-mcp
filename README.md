@@ -6,14 +6,16 @@ a Streamable HTTP transport that bridges the official
 WHATWG Request/Response. The [@hono/mcp](https://www.npmjs.com/package/@hono/mcp)
 architecture, in Python.
 
-> **Status: alpha (0.5.x).** Tracks the SDK's latest revision — **2025-11-25**
+> **Status: alpha (0.6.x).** Tracks the SDK's latest revision — **2025-11-25**
 > on CPython/ASGI (mcp ≥ 1.28), with `MCP-Protocol-Version` header validation.
 > Serves MCP Inspector, Claude Code, and the official SDK client — single-JSON
 > POST plus the optional server-initiated GET SSE stream on ASGI, and a
-> **stateless mode that runs on Cloudflare Workers** (verified on workerd).
+> **stateless mode that runs on Cloudflare Workers** (verified on workerd and
+> a deployed Workers Paid application).
 > On Workers the SDK is currently pinned to a 2025-06-18-capable version by
 > Pyodide's `pydantic-core` wheel availability (DESIGN §6.2). The internal
-> design memo (Japanese) lives in [DESIGN.md](DESIGN.md).
+> design memo (Japanese) lives in [DESIGN.md](DESIGN.md); release history is
+> in [CHANGELOG.md](CHANGELOG.md).
 
 ```python
 from mcp.server.lowlevel import Server   # official SDK — define your tools here
@@ -93,13 +95,20 @@ state — use the default stateful mode on ASGI ([examples/echo](examples/echo))
 when you need those. (Import `mcp` lazily inside a handler on Workers, never
 at global scope — its dependency chain seeds entropy at import.)
 
+Production verification uses a Workers Paid account: the cold lazy import of
+the MCP dependency chain takes roughly 3 seconds of CPU and exceeds the Free
+plan's Python runtime limiter. The application itself fits the Free plan's
+compressed bundle-size limit, but the SDK import does not complete there.
+Deployment measurements and the account/plan traps are recorded in
+[docs/research/pyodide.md](docs/research/pyodide.md).
+
 ## Why
 
 - Python is MCP's largest ecosystem, yet mounting an MCP endpoint inside your
   own web app still goes through ASGI plumbing with known friction.
 - Cloudflare's remote-MCP story (Agents SDK, McpAgent) is TypeScript-only —
   MCP on Python Workers was unclaimed territory. hayate-mcp runs there today
-  (stateless mode, verified on workerd); the SDK imports and runs on Pyodide
+  (stateless mode, verified locally and on Workers Paid); the SDK imports and runs on Pyodide
   (docs/research/pyodide.md).
 
 ## License
