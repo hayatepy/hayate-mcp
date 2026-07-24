@@ -1,7 +1,26 @@
 # MCP SDK on workerd spike(DESIGN §10 spike)
 
 > 2026-07-22 実施。spike コードは `spike/sdk-workers/`(使い捨て、entry.py)。
-> 結論は DESIGN §6 / §9 に反映済み。
+> 以下は当時の実測記録。2026-07-24 の v0.8 判断で結論を更新した。
+
+## 2026-07-24 更新
+
+SDK 1.12.4 自体は動作したが、MCP 2025-11-25 対応の SDK 1.28.1 は
+Pydantic 2.11+ を要求し、pywrangler 1.15 が解決に使う Pyodide 0.28.3
+index の Pydantic 2.10.6 / pydantic-core 2.27.2 では導入できない。
+Workers だけ 2025-06-18 に留める判断を撤回し、v0.8 で
+`WorkerMcpServer` / `WorkerMcpMount` を実装した。
+
+- 対応 surface は capability と一致する lifecycle / ping / tools。
+- Emscripten bundle から `mcp` / Pydantic を除去。
+- `jsonschema 4.25.1` と Pyodide wasm wheel の `rpds-py 0.23.1` で
+  Draft 2020-12 input/output schema を検証。
+- workerd 上で MCP 2025-11-25 initialize → tools/list → tools/call を通し、
+  公式 SDK 1.28.1 の `ClientSession` からの相互運用も確認。
+- CI の `scripts/check_workerd.sh` が local wheel build、bundle dependency、
+  workerd 起動、公式 client 一周を再現する。
+
+以下の SDK 1.12.4 の測定値は、旧方式との比較資料として保持する。
 
 ## 結論(TL;DR)
 

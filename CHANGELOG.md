@@ -2,6 +2,31 @@
 
 All notable changes to hayate-mcp are documented here.
 
+## [0.8.0] - 2026-07-24
+
+### Added
+
+- Add a Pydantic-free `WorkerMcpServer` and `WorkerMcpMount` implementing the
+  negotiated MCP 2025-11-25 lifecycle, ping, and tools capability on
+  Cloudflare Python Workers.
+- Add Draft 2020-12 input/output schema validation, structured tool results,
+  sanitized failures, OAuth principals, and per-tool scopes to the Workers
+  runtime.
+- Add a workerd CI gate that builds the local wheel, verifies the dependency
+  bundle contains neither the official SDK nor Pydantic, and runs the official
+  MCP SDK client through initialize, tools/list, and tools/call.
+
+### Changed
+
+- Remove the Emscripten dependency on the old MCP SDK line. Both ASGI and
+  Workers now negotiate the latest stable protocol revision, 2025-11-25.
+- Replace the Workers example's request-scoped SDK import with an entropy-safe
+  static tools server whose production bundle is substantially smaller.
+- Fuzz arbitrary JSON values through the Workers transport and require every
+  successful response to validate against the official SDK's JSON-RPC model.
+- Audit locked dependencies on every change and publish an SPDX SBOM plus
+  GitHub build and SBOM attestations with each release.
+
 ## [0.7.0] - 2026-07-24
 
 ### Added

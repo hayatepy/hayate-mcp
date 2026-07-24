@@ -1,20 +1,17 @@
 # hayate-mcp
 
-Mount an MCP server into a [hayate](https://github.com/hayatepy/hayate) app —
-a Streamable HTTP transport that bridges the official
-[MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk) to
-WHATWG Request/Response. The [@hono/mcp](https://www.npmjs.com/package/@hono/mcp)
-architecture, in Python.
+Mount an MCP server into a [hayate](https://github.com/hayatepy/hayate) app:
+an official [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk)
+bridge for ASGI and a focused, Pydantic-free tools runtime for Cloudflare
+Python Workers, both over the same Streamable HTTP boundary.
 
-> **Status: alpha (0.7.x).** Tracks the latest stable revision —
-> **MCP 2025-11-25** on CPython/ASGI (official SDK ≥ 1.28.1 and < 2), with
+> **Status: alpha (0.8.x).** Tracks the latest stable revision —
+> **MCP 2025-11-25 on both CPython/ASGI and Cloudflare Python Workers**, with
 > `MCP-Protocol-Version` header validation.
 > Serves MCP Inspector, Claude Code, and the official SDK client — single-JSON
 > POST plus the optional server-initiated GET SSE stream on ASGI, and a
-> **stateless mode that runs on Cloudflare Workers** (verified on workerd and
-> a deployed Workers Paid application).
-> On Workers the SDK is currently pinned to a 2025-06-18-capable version by
-> Pyodide's `pydantic-core` wheel availability (DESIGN §6.2). The internal
+> **stateless tools runtime on Cloudflare Workers**, verified in CI on workerd
+> and by the official SDK client. The internal
 > design memo (Japanese) lives in [DESIGN.md](DESIGN.md); release history is
 > in [CHANGELOG.md](CHANGELOG.md).
 
@@ -42,19 +39,26 @@ claude mcp add my-tools --transport http http://127.0.0.1:8000/mcp
 
 ## What it implements
 
-| Verb | Behavior |
-|---|---|
-| POST | JSON-RPC request → single JSON response (`initialize` mints an `Mcp-Session-Id`); notifications → 202 |
-| GET | Server-initiated SSE stream (one per session; a second returns 409) |
-| DELETE | Explicit session termination |
+| Verb | ASGI | Workers |
+|---|---|---|
+| POST | JSON-RPC → JSON/SSE; stateful `initialize` mints an `Mcp-Session-Id` | JSON-RPC → single JSON; stateless |
+| GET | Server-initiated SSE stream (one per session; a second returns 409) | 405 (not advertised) |
+| DELETE | Explicit session termination | 200 stateless no-op |
 
 POST requests must use `Content-Type: application/json` and advertise both
 `application/json` and `text/event-stream` in `Accept`; notifications and
 client responses receive an empty 202. GET must advertise SSE. Plus
 spec-mandated Origin validation (DNS-rebinding defense) and an
-in-memory session store with idle eviction. Protocol handling — capabilities,
-tool dispatch, versioning — stays entirely in the official SDK: this package
-is transport only, so spec revisions ride SDK upgrades.
+in-memory session store with idle eviction. On ASGI, capabilities, dispatch,
+and versioning stay in the official SDK. The Workers runtime implements only
+the lifecycle, ping, and tools surface it advertises; resources, prompts,
+logging, sampling, tasks, and server-initiated streams are omitted from
+capabilities rather than partially implemented.
+
+After `initialize`, clients send `MCP-Protocol-Version` on every subsequent
+HTTP request. The Workers runtime accepts exactly `2025-11-25`; because it
+does not implement the older fallback revision, a missing or different header
+returns 400.
 
 ## Authorization (OAuth 2.0 Resource Server)
 
@@ -100,48 +104,53 @@ creating `(issuer, client_id, subject)` identity.
 
 ## On Cloudflare Workers
 
-Pass `stateless=True` and mount on a plain Worker — no Durable Object needed.
-Each request runs the SDK server to completion on its own, which is what makes
-it Workers-safe:
+Use `WorkerMcpServer` and `WorkerMcpMount` on a plain Worker — no Durable
+Object, Pydantic, or old SDK line is needed:
 
 ```python
 from hayate import Hayate
 from hayate.adapters.workers import to_workers
-from hayate_mcp import McpMount
+from hayate_mcp import WorkerMcpMount, WorkerMcpServer
 
 app = Hayate()
-McpMount(build_server(), stateless=True).register(app)
+server = WorkerMcpServer("my-tools", version="1.0.0")
+
+@server.tool(
+    name="echo",
+    description="Echo text.",
+    input_schema={
+        "type": "object",
+        "properties": {"text": {"type": "string"}},
+        "required": ["text"],
+        "additionalProperties": False,
+    },
+)
+async def echo(arguments):
+    return f"echo: {arguments['text']}"
+
+WorkerMcpMount(server).register(app)
 Default = to_workers(app)
 ```
 
-See [examples/workers](examples/workers) (verified on workerd). Trade-off:
-stateless has no server-initiated GET stream and no cross-request session
-state — use the default stateful mode on ASGI ([examples/echo](examples/echo))
-when you need those. (Import `mcp` lazily inside a handler on Workers, never
-at global scope — or use `LazyMcpMount`, whose factory receives the request
-context and imports/builds the SDK server on first use.)
+Tool input and structured output use JSON Schema 2020-12 and are validated
+inside request scope, keeping workerd global initialization entropy-safe.
+Expected failures can raise `ToolError`; unexpected exceptions are logged and
+sanitized before reaching the model. OAuth and per-tool scopes use the same
+`Authorization` and `get_principal()` APIs as the SDK-backed mount.
 
-Production verification uses a Workers Paid account: the cold lazy import of
-the MCP dependency chain takes roughly 3 seconds of CPU and exceeds the Free
-plan's Python runtime limiter. The application itself fits the Free plan's
-compressed bundle-size limit, but the SDK import does not complete there.
-Deployment measurements and the account/plan traps are recorded in
-[docs/research/pyodide.md](docs/research/pyodide.md).
-
-The Emscripten dependency floor remains at SDK 1.12 because the current
-Pyodide index cannot install the `pydantic-core` wheel required by SDK 1.28.1.
-That runtime therefore negotiates 2025-06-18 until the wheel is available;
-CPython is pinned to the complete 2025-11-25 line. SDK v2 is intentionally
-excluded because it is still pre-stable and changes the transport API.
+See [examples/workers](examples/workers). The Workers surface is stateless and
+does not advertise server-initiated streams or session state. Use the default
+SDK-backed ASGI mount ([examples/echo](examples/echo)) when you need those.
+CI builds the local wheel in an isolated project, boots current workerd, and
+connects with the official MCP SDK client.
 
 ## Why
 
 - Python is MCP's largest ecosystem, yet mounting an MCP endpoint inside your
   own web app still goes through ASGI plumbing with known friction.
-- Cloudflare's remote-MCP story (Agents SDK, McpAgent) is TypeScript-only —
-  MCP on Python Workers was unclaimed territory. hayate-mcp runs there today
-  (stateless mode, verified locally and on Workers Paid); the SDK imports and runs on Pyodide
-  (docs/research/pyodide.md).
+- Cloudflare's remote-MCP story (Agents SDK, McpAgent) is TypeScript-first.
+  hayate-mcp supplies a Python Workers path that speaks the same stable MCP
+  revision without requiring the Pydantic-based SDK in the edge bundle.
 
 ## License
 
