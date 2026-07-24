@@ -10,19 +10,28 @@ CPython users still write ``from hayate_mcp import McpMount``.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-__version__ = "0.6.1"
+__version__ = "0.7.0"
 
-__all__ = ["Authorization", "McpMount", "MemorySessionStore", "__version__"]
+__all__ = [
+    "Authorization",
+    "LazyMcpMount",
+    "McpMount",
+    "MemorySessionStore",
+    "__version__",
+    "get_principal",
+]
 
 if TYPE_CHECKING:
     from .authorization import Authorization
+    from .lazy import LazyMcpMount
     from .mount import McpMount
+    from .principal import get_principal
     from .session import MemorySessionStore
 
 
-def __getattr__(name: str):
+def __getattr__(name: str) -> Any:
     if name == "McpMount":
         from .mount import McpMount
 
@@ -35,4 +44,12 @@ def __getattr__(name: str):
         from .authorization import Authorization
 
         return Authorization
+    if name == "LazyMcpMount":
+        from .lazy import LazyMcpMount
+
+        return LazyMcpMount
+    if name == "get_principal":
+        from .principal import get_principal
+
+        return get_principal
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

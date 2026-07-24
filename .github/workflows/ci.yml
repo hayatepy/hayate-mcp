@@ -30,6 +30,7 @@ jobs:
       - run: uv sync
       - run: uv run ruff check src tests examples
       - run: uv run ruff format --check src tests examples
+      - run: uv run mypy src
       # Includes the E2E job: uvicorn + the official SDK client over real HTTP.
       - run: uv run pytest -q
 

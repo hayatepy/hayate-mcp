@@ -14,18 +14,29 @@ import logging
 import math
 import secrets
 import time
+from collections.abc import AsyncIterator
 from typing import Any
 
 import anyio
 from mcp.shared.message import SessionMessage
-from mcp.types import JSONRPCError, JSONRPCMessage, JSONRPCResponse
+from mcp.types import JSONRPCError, JSONRPCMessage, JSONRPCRequest, JSONRPCResponse
+
+from .principal import PrincipalIdentity
 
 logger = logging.getLogger("hayate_mcp")
 
 
 class McpSession:
-    def __init__(self, server: Any, initialization_options: Any, *, id: str | None = None) -> None:
+    def __init__(
+        self,
+        server: Any,
+        initialization_options: Any,
+        *,
+        id: str | None = None,
+        owner: PrincipalIdentity | None = None,
+    ) -> None:
         self.id = id if id is not None else secrets.token_hex(16)
+        self.owner = owner
         self.last_seen = time.monotonic()
         self._pending: dict[Any, asyncio.Future[JSONRPCMessage]] = {}
         # Server-initiated traffic for the optional GET stream (v0.2). One
@@ -73,7 +84,7 @@ class McpSession:
         self._stream_claimed = True
         return True
 
-    async def outbound_events(self):
+    async def outbound_events(self) -> AsyncIterator[dict[str, str]]:
         """Server-initiated messages as SSE payload dicts, until close()."""
         try:
             while True:
@@ -88,7 +99,10 @@ class McpSession:
         await self._to_server.send(SessionMessage(message=message))
 
     async def request(self, message: JSONRPCMessage, *, timeout: float = 30.0) -> JSONRPCMessage:
-        request_id = message.root.id
+        root = message.root
+        if not isinstance(root, JSONRPCRequest):
+            raise TypeError("McpSession.request requires a JSON-RPC request")
+        request_id = root.id
         future: asyncio.Future[JSONRPCMessage] = asyncio.get_running_loop().create_future()
         self._pending[request_id] = future
         try:

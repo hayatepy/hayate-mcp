@@ -2,6 +2,30 @@
 
 All notable changes to hayate-mcp are documented here.
 
+## [0.7.0] - 2026-07-24
+
+### Added
+
+- Add normalized authenticated principals, `get_principal()` propagation into
+  tool handlers, mount-wide required scopes, and per-tool scope challenges.
+- Add `LazyMcpMount` for request-aware Workers factories without importing the
+  official SDK at module initialization time.
+- Add strict typing metadata and mypy validation.
+
+### Changed
+
+- Align Streamable HTTP with MCP 2025-11-25: POST requires both advertised
+  response media types and JSON input, notifications and client responses
+  return empty 202 responses, GET requires SSE, and unsupported protocol
+  versions return 400.
+- Bind stateful sessions to the authenticated issuer, client, and subject;
+  another principal receives 404 rather than access to the session.
+- Validate and canonicalize protected-resource and authorization-server URIs,
+  requiring HTTPS outside loopback development.
+- Require official SDK 1.28.1 or newer on CPython and cap it below the
+  forthcoming incompatible v2 line. Emscripten keeps the compatible 1.x floor
+  until Pyodide supplies the required `pydantic-core` wheel.
+
 ## [0.6.1] - 2026-07-24
 
 ### Changed

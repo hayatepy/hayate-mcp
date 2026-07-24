@@ -22,7 +22,7 @@ async def test_mounted_flow_through_the_app():
             "/mcp",
             method="POST",
             json=INITIALIZE,
-            headers={"accept": "application/json"},
+            headers={"accept": "application/json, text/event-stream"},
         )
         assert init.status == 200
         session_id = init.headers.get("mcp-session-id")
@@ -31,7 +31,10 @@ async def test_mounted_flow_through_the_app():
             "/mcp",
             method="POST",
             json=LIST_TOOLS,
-            headers={"mcp-session-id": session_id},
+            headers={
+                "accept": "application/json, text/event-stream",
+                "mcp-session-id": session_id,
+            },
         )
         assert listed.status == 200
         assert (await listed.json())["result"]["tools"][0]["name"] == "echo"

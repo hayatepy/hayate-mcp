@@ -70,7 +70,8 @@ def rpc_request(
     path: str = "/mcp",
     headers: dict[str, str] | None = None,
 ) -> Request:
-    merged = {"content-type": "application/json", "accept": "application/json", **(headers or {})}
+    accept = "text/event-stream" if method == "GET" else "application/json, text/event-stream"
+    merged = {"content-type": "application/json", "accept": accept, **(headers or {})}
     if session_id is not None:
         merged["mcp-session-id"] = session_id
     if origin is not None:

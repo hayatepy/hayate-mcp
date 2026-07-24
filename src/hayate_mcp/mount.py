@@ -12,6 +12,8 @@ SSE stream (one per session); DELETE terminates a session. The
 
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from hayate import Context, Request, Response, problem
@@ -20,10 +22,14 @@ from mcp.shared.version import SUPPORTED_PROTOCOL_VERSIONS
 from mcp.types import JSONRPCError, JSONRPCMessage, JSONRPCRequest, JSONRPCResponse
 from pydantic import ValidationError
 
+from .authorization import Authorization
+from .principal import Principal, principal_context, principal_identity
 from .session import McpSession, MemorySessionStore
 
 SESSION_HEADER = "mcp-session-id"
 PROTOCOL_VERSION_HEADER = "mcp-protocol-version"
+CONTENT_TYPE_JSON = "application/json"
+CONTENT_TYPE_SSE = "text/event-stream"
 
 
 class McpMount:
@@ -37,7 +43,8 @@ class McpMount:
         store: MemorySessionStore | None = None,
         session_id: str | None = None,
         stateless: bool = False,
-        authorization: Any | None = None,
+        authorization: Authorization | None = None,
+        tool_scopes: Mapping[str, Sequence[str]] | None = None,
     ) -> None:
         if not path.startswith("/"):
             raise ValueError("path must start with '/'")
@@ -62,6 +69,9 @@ class McpMount:
         # OAuth 2.0 Resource Server config (DESIGN §5): when set, MCP requests
         # require a valid Bearer token and the RFC 9728 metadata is served.
         self.authorization = authorization
+        self.tool_scopes = {
+            name: tuple(dict.fromkeys(scopes)) for name, scopes in (tool_scopes or {}).items()
+        }
 
     # -- the core ----------------------------------------------------------------------
 
@@ -69,6 +79,8 @@ class McpMount:
         raw = getattr(request, "raw", request)
 
         if self.authorization is not None and raw.url.pathname == self._metadata_path():
+            if raw.method != "GET":
+                return problem(405, title="Method Not Allowed", headers={"allow": "GET"})
             return self._serve_metadata()
 
         if raw.url.pathname != self.path:
@@ -84,18 +96,25 @@ class McpMount:
         if raw.method in ("GET", "DELETE") and not self._protocol_version_ok(raw):
             return problem(400, title="Unsupported MCP-Protocol-Version")
 
+        principal: Principal | None = None
         if self.authorization is not None:
-            claims = await self.authorization.authenticate(raw.headers.get("authorization"))
-            if claims is None:
-                return self._unauthorized()
+            authorization_header = raw.headers.get("authorization")
+            principal = await self.authorization.authenticate(authorization_header)
+            if principal is None:
+                error = "invalid_token" if authorization_header is not None else None
+                return self._unauthorized(error=error)
+            missing = self.authorization.missing_scopes(principal)
+            if missing:
+                return self._insufficient_scope(self.authorization.required_scopes)
 
-        if raw.method == "POST":
-            return await self._post(raw)
-        if raw.method == "DELETE":
-            return await self._delete(raw)
-        if raw.method == "GET":
-            return self._get(raw)
-        return problem(405, title="Method Not Allowed", headers={"allow": "GET, POST, DELETE"})
+        with principal_context(principal):
+            if raw.method == "POST":
+                return await self._post(raw, principal)
+            if raw.method == "DELETE":
+                return await self._delete(raw, principal)
+            if raw.method == "GET":
+                return self._get(raw, principal)
+            return problem(405, title="Method Not Allowed", headers={"allow": "GET, POST, DELETE"})
 
     def _protocol_version_ok(self, raw: Request) -> bool:
         """True unless the client declared a version this server can't speak.
@@ -107,11 +126,26 @@ class McpMount:
 
     # -- verbs -------------------------------------------------------------------------
 
-    async def _post(self, raw: Request) -> Response:
+    async def _post(self, raw: Request, principal: Principal | None) -> Response:
+        if not self._accepts(raw, CONTENT_TYPE_JSON, CONTENT_TYPE_SSE):
+            return problem(
+                406,
+                title="Not Acceptable",
+                detail="MCP POST requests must accept application/json and text/event-stream",
+            )
+        if self._media_type(raw.headers.get("content-type")) != CONTENT_TYPE_JSON:
+            return problem(
+                415,
+                title="Unsupported Media Type",
+                detail="MCP POST requests must use application/json",
+            )
         try:
-            body = await raw.json()
-        except Exception:
-            return problem(400, title="Body must be JSON")
+            body = json.loads(
+                (await raw.bytes()).decode("utf-8"),
+                parse_constant=_reject_json_constant,
+            )
+        except (UnicodeDecodeError, ValueError):
+            return problem(400, title="Body must be UTF-8 JSON")
         try:
             message = JSONRPCMessage.model_validate(body)
         except ValidationError:
@@ -127,19 +161,35 @@ class McpMount:
         if not is_initialize and not self._protocol_version_ok(raw):
             return problem(400, title="Unsupported MCP-Protocol-Version")
 
+        if self.authorization is not None:
+            assert principal is not None
+            required = self._required_tool_scopes(message)
+            missing = self.authorization.missing_scopes(principal, required)
+            if missing:
+                return self._insufficient_scope(list(required))
+
         if self.stateless:
             return await self._post_stateless(message)
 
+        owner = principal_identity(principal)
         if is_initialize:
-            session = McpSession(self.server, self.initialization_options, id=self.session_id)
+            session = McpSession(
+                self.server,
+                self.initialization_options,
+                id=self.session_id,
+                owner=owner,
+            )
             await self.store.add(session)
         else:
             session_id = raw.headers.get(SESSION_HEADER)
             if session_id is None:
                 return problem(400, title=f"Missing {SESSION_HEADER} header")
-            session = self.store.get(session_id)
-            if session is None:
+            existing = self.store.get(session_id)
+            if existing is None:
                 return problem(404, title="Session not found")
+            if existing.owner != owner:
+                return problem(404, title="Session not found")
+            session = existing
 
         if isinstance(message.root, JSONRPCRequest):
             reply = await session.request(message)
@@ -200,7 +250,7 @@ class McpMount:
             read_stream, write_stream, self.initialization_options, stateless=True
         )
 
-    def _get(self, raw: Request) -> Response:
+    def _get(self, raw: Request, principal: Principal | None) -> Response:
         """The optional server-initiated SSE stream (one per session).
 
         Stateless mode has no persistent session to stream from, so the
@@ -210,11 +260,19 @@ class McpMount:
         """
         if self.stateless:
             return problem(405, title="Method Not Allowed", headers={"allow": "POST"})
+        if not self._accepts(raw, CONTENT_TYPE_SSE):
+            return problem(
+                406,
+                title="Not Acceptable",
+                detail="MCP GET requests must accept text/event-stream",
+            )
         session_id = raw.headers.get(SESSION_HEADER)
         if session_id is None:
             return problem(400, title=f"Missing {SESSION_HEADER} header")
         session = self.store.get(session_id)
         if session is None:
+            return problem(404, title="Session not found")
+        if session.owner != principal_identity(principal):
             return problem(404, title="Session not found")
         if not session.claim_stream():
             return problem(409, title="A stream is already open for this session")
@@ -224,13 +282,16 @@ class McpMount:
             headers={"content-type": "text/event-stream", "cache-control": "no-cache"},
         )
 
-    async def _delete(self, raw: Request) -> Response:
+    async def _delete(self, raw: Request, principal: Principal | None) -> Response:
         if self.stateless:
             # Nothing to terminate; the client's request is a well-formed no-op.
             return Response(None, status=200)
         session_id = raw.headers.get(SESSION_HEADER)
         if session_id is None:
             return problem(400, title=f"Missing {SESSION_HEADER} header")
+        session = self.store.get(session_id)
+        if session is None or session.owner != principal_identity(principal):
+            return problem(404, title="Session not found")
         if not await self.store.remove(session_id):
             return problem(404, title="Session not found")
         return Response(None, status=200)
@@ -248,25 +309,79 @@ class McpMount:
     def _metadata_path(self) -> str:
         # RFC 9728 §3.1 path-insertion form, derived from the resource
         # identifier (matches the URL the 401 WWW-Authenticate advertises).
-        return self.authorization.metadata_path
+        authorization = self.authorization
+        assert authorization is not None
+        return authorization.metadata_path
 
     def _serve_metadata(self) -> Response:
+        authorization = self.authorization
+        assert authorization is not None
         return Response(
-            _json_dumps(self.authorization.metadata()),
+            _json_dumps(authorization.metadata()),
             status=200,
             headers={"content-type": "application/json"},
         )
 
-    def _unauthorized(self) -> Response:
+    @staticmethod
+    def _media_type(value: str | None) -> str:
+        return (value or "").split(";", 1)[0].strip().lower()
+
+    @staticmethod
+    def _accepts(raw: Request, *required: str) -> bool:
+        accepted: set[str] = set()
+        for item in (raw.headers.get("accept") or "").split(","):
+            media_type, *parameters = item.split(";")
+            quality = 1.0
+            for parameter in parameters:
+                name, separator, value = parameter.strip().partition("=")
+                if separator and name.lower() == "q":
+                    try:
+                        quality = float(value)
+                    except ValueError:
+                        quality = 0.0
+            if 0 < quality <= 1:
+                accepted.add(media_type.strip().lower())
+        return all(media_type in accepted for media_type in required)
+
+    def _required_tool_scopes(self, message: JSONRPCMessage) -> tuple[str, ...]:
+        root = message.root
+        if not isinstance(root, JSONRPCRequest) or root.method != "tools/call":
+            return ()
+        params = root.params
+        if not isinstance(params, dict):
+            return ()
+        name = params.get("name")
+        return self.tool_scopes.get(name, ()) if isinstance(name, str) else ()
+
+    def _unauthorized(self, *, error: str | None = None) -> Response:
+        authorization = self.authorization
+        assert authorization is not None
         res = problem(401, title="Authorization required")
-        res.headers.set("www-authenticate", self.authorization.www_authenticate())
+        res.headers.set(
+            "www-authenticate",
+            authorization.www_authenticate(error, scopes=tuple(authorization.required_scopes)),
+        )
+        return res
+
+    def _insufficient_scope(self, required: list[str]) -> Response:
+        authorization = self.authorization
+        assert authorization is not None
+        res = problem(
+            403,
+            title="Insufficient scope",
+            extensions={"required_scopes": required},
+        )
+        res.headers.set(
+            "www-authenticate",
+            authorization.www_authenticate("insufficient_scope", scopes=tuple(required)),
+        )
         return res
 
     def register(self, app: Any) -> None:
         """Mount on a hayate app (DESIGN TL;DR: this is the whole sugar)."""
 
         async def mcp_handler(c: Context) -> Response:
-            return await self.fetch(c.req)
+            return await self.fetch(c.req.raw)
 
         for method in ("GET", "POST", "DELETE"):
             app.on(method, self.path)(mcp_handler)
@@ -278,6 +393,8 @@ class McpMount:
 
 
 def _json_dumps(data: Any) -> str:
-    import json
-
     return json.dumps(data, separators=(",", ":"))
+
+
+def _reject_json_constant(value: str) -> Any:
+    raise ValueError(f"{value} is not valid JSON")
