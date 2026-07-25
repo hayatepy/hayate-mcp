@@ -15,7 +15,7 @@ import sys
 
 from hayate import Context, Hayate
 
-from hayate_mcp import WorkerMcpMount, WorkerMcpServer
+from hayate_mcp import WorkerMcpMount, WorkerMcpServer, get_request_context
 
 
 def build_server() -> WorkerMcpServer:
@@ -32,6 +32,7 @@ def build_server() -> WorkerMcpServer:
         },
     )
     async def echo(arguments: dict) -> str:
+        assert get_request_context() is not None
         return f"echo: {arguments['text']}"
 
     return server

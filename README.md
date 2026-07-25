@@ -5,7 +5,7 @@ an official [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk)
 bridge for ASGI and a focused, Pydantic-free tools runtime for Cloudflare
 Python Workers, both over the same Streamable HTTP boundary.
 
-> **Status: alpha (0.8.x).** Tracks the latest stable revision —
+> **Status: alpha (0.9.x).** Tracks the latest stable revision —
 > **MCP 2025-11-25 on both CPython/ASGI and Cloudflare Python Workers**, with
 > `MCP-Protocol-Version` header validation.
 > Serves MCP Inspector, Claude Code, and the official SDK client — single-JSON
@@ -101,6 +101,24 @@ async def call_tool(name, arguments):
 Insufficient global or per-tool scopes return 403 with the MCP 2025-11-25
 `WWW-Authenticate` step-up challenge. Stateful sessions are bound to the
 creating `(issuer, client_id, subject)` identity.
+
+## Hayate request context
+
+Tools mounted with `register(app)` can reuse request-scoped Hayate state,
+headers, and runtime bindings without adding them to model-visible arguments:
+
+```python
+from hayate_mcp import get_request_context
+
+context = get_request_context()
+assert context is not None
+database = context.env.DB
+request_id = context.get("request_id")
+```
+
+The context is isolated across concurrent requests and reset when each request
+finishes. `get_request_context()` returns `None` outside a registered mount;
+the lower-level `mount.fetch(request)` API deliberately has no app context.
 
 ## On Cloudflare Workers
 

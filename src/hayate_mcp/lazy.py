@@ -8,6 +8,8 @@ from typing import Any
 
 from hayate import Context, Response
 
+from .context import request_context
+
 MountFactory = Callable[[Context], Any | Awaitable[Any]]
 
 
@@ -71,7 +73,8 @@ class LazyMcpMount:
 
     def register(self, app: Any) -> None:
         async def handler(c: Context) -> Response:
-            return await self.fetch(c)
+            with request_context(c):
+                return await self.fetch(c)
 
         for method in ("GET", "POST", "DELETE"):
             app.on(method, self.path)(handler)

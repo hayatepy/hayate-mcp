@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"
 
 __all__ = [
     "Authorization",
@@ -25,10 +25,12 @@ __all__ = [
     "WorkerTool",
     "__version__",
     "get_principal",
+    "get_request_context",
 ]
 
 if TYPE_CHECKING:
     from .authorization import Authorization
+    from .context import get_request_context
     from .lazy import LazyMcpMount
     from .mount import McpMount
     from .principal import get_principal
@@ -57,6 +59,10 @@ def __getattr__(name: str) -> Any:
         from .principal import get_principal
 
         return get_principal
+    if name == "get_request_context":
+        from .context import get_request_context
+
+        return get_request_context
     if name in {"ToolError", "WorkerMcpMount", "WorkerMcpServer", "WorkerTool"}:
         from .worker import ToolError, WorkerMcpMount, WorkerMcpServer, WorkerTool
 
