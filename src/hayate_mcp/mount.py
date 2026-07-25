@@ -23,6 +23,7 @@ from mcp.types import JSONRPCError, JSONRPCMessage, JSONRPCRequest, JSONRPCRespo
 from pydantic import ValidationError
 
 from .authorization import Authorization
+from .context import request_context
 from .principal import Principal, principal_context, principal_identity
 from .session import McpSession, MemorySessionStore
 
@@ -381,7 +382,8 @@ class McpMount:
         """Mount on a hayate app (DESIGN TL;DR: this is the whole sugar)."""
 
         async def mcp_handler(c: Context) -> Response:
-            return await self.fetch(c.req.raw)
+            with request_context(c):
+                return await self.fetch(c.req.raw)
 
         for method in ("GET", "POST", "DELETE"):
             app.on(method, self.path)(mcp_handler)

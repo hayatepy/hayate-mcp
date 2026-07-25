@@ -26,6 +26,7 @@ from typing import Any
 from hayate import Context, Request, Response, problem
 
 from .authorization import Authorization
+from .context import request_context
 from .principal import Principal, principal_context
 
 PROTOCOL_VERSION = "2025-11-25"
@@ -444,7 +445,8 @@ class WorkerMcpMount:
 
     def register(self, app: Any) -> None:
         async def mcp_handler(context: Context) -> Response:
-            return await self.fetch(context.req.raw)
+            with request_context(context):
+                return await self.fetch(context.req.raw)
 
         for method in ("GET", "POST", "DELETE"):
             app.on(method, self.path)(mcp_handler)

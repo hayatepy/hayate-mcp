@@ -2,6 +2,24 @@
 
 All notable changes to hayate-mcp are documented here.
 
+## [0.9.0] - 2026-07-25
+
+### Added
+
+- Add `get_request_context()` for tools mounted with `register(app)`, allowing
+  both SDK-backed and Workers handlers to reuse Hayate headers, request state,
+  and runtime bindings without exposing infrastructure as tool arguments.
+- Isolate the propagated context across concurrent requests and reset it after
+  each request.
+
+### Changed
+
+- Make the workerd gate install the built wheel and its Workers-only
+  dependencies into pywrangler's Pyodide environment, then assert that the
+  required vendored packages are present.
+- Keep the gate compatible with current Node releases by removing Pyodide's
+  obsolete `--experimental-wasm-stack-switching` launcher argument.
+
 ## [0.8.0] - 2026-07-24
 
 ### Added
