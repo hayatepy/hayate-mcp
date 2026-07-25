@@ -27,6 +27,7 @@ from hayate import Context, Request, Response, problem
 
 from .authorization import Authorization
 from .context import request_context
+from .origin import origin_allowed
 from .principal import Principal, principal_context
 
 PROTOCOL_VERSION = "2025-11-25"
@@ -488,10 +489,11 @@ class WorkerMcpMount:
         return raw.headers.get(PROTOCOL_VERSION_HEADER) == PROTOCOL_VERSION
 
     def _origin_allowed(self, raw: Request) -> bool:
-        origin = raw.headers.get("origin")
-        if origin is None or origin == "null":
-            return origin != "null"
-        return origin == raw.url.origin or origin in self.trusted_origins
+        return origin_allowed(
+            raw.headers.get("origin"),
+            raw.url.origin,
+            self.trusted_origins,
+        )
 
     def _required_tool_scopes(self, message: dict[str, Any]) -> tuple[str, ...]:
         if message["method"] != "tools/call":

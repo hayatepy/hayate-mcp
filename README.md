@@ -55,6 +55,22 @@ the lifecycle, ping, and tools surface it advertises; resources, prompts,
 logging, sampling, tasks, and server-initiated streams are omitted from
 capabilities rather than partially implemented.
 
+CI runs the pinned official MCP conformance runner against a comprehensive
+SDK-backed fixture through this mount. The suite covers all 31 current
+2025-11-25 server scenarios that apply without the optional resumability
+extension, including lifecycle, Streamable HTTP, every SDK capability,
+JSON Schema 2020-12 preservation, and DNS-rebinding protection. Workers keep
+their smaller advertised tools-only denominator and are verified separately
+through workerd with the official SDK client.
+
+Browser requests are accepted automatically only when the endpoint and
+`Origin` are both loopback (`localhost`, `127.0.0.1`, or `::1`). For every
+other browser origin, pass the exact allowed origins with
+`trusted_origins=[...]`. Non-browser clients such as the official SDK,
+Inspector, and Claude Code do not send `Origin` and continue to work without
+configuration. The request's reflected `Host` value is never treated as an
+allow-list entry.
+
 After `initialize`, clients send `MCP-Protocol-Version` on every subsequent
 HTTP request. The Workers runtime accepts exactly `2025-11-25`; because it
 does not implement the older fallback revision, a missing or different header

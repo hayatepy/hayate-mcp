@@ -2,6 +2,19 @@
 
 All notable changes to hayate-mcp are documented here.
 
+## Unreleased
+
+### Security
+
+- Reject DNS-rebinding requests whose attacker-controlled `Host` and `Origin`
+  reflect each other. Browser origins outside loopback now require an explicit
+  `trusted_origins` entry on both ASGI and Workers transports.
+
+### Added
+
+- Run 31 applicable MCP 2025-11-25 server scenarios from the pinned official
+  conformance runner in CI, without expected-failure baselines.
+
 ## [0.10.0] - 2026-07-25
 
 ### Added
