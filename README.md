@@ -5,7 +5,7 @@ an official [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk)
 bridge for ASGI and a focused, Pydantic-free tools runtime for Cloudflare
 Python Workers, both over the same Streamable HTTP boundary.
 
-> **Status: alpha (0.9.x).** Tracks the latest stable revision —
+> **Status: alpha (0.10.x).** Tracks the latest stable revision —
 > **MCP 2025-11-25 on both CPython/ASGI and Cloudflare Python Workers**, with
 > `MCP-Protocol-Version` header validation.
 > Serves MCP Inspector, Claude Code, and the official SDK client — single-JSON
@@ -142,6 +142,7 @@ server = WorkerMcpServer("my-tools", version="1.0.0")
         "required": ["text"],
         "additionalProperties": False,
     },
+    execution={"taskSupport": "forbidden"},
 )
 async def echo(arguments):
     return f"echo: {arguments['text']}"
@@ -152,9 +153,12 @@ Default = to_workers(app)
 
 Tool input and structured output use JSON Schema 2020-12 and are validated
 inside request scope, keeping workerd global initialization entropy-safe.
-Expected failures can raise `ToolError`; unexpected exceptions are logged and
-sanitized before reaching the model. OAuth and per-tool scopes use the same
-`Authorization` and `get_principal()` APIs as the SDK-backed mount.
+Correctable validation failures and `ToolError` become model-visible `isError`
+results, matching the official SDK. `WorkerProtocolError` preserves deliberate
+JSON-RPC codes, HTTP statuses, and headers for request-aware edge authentication
+or throttling; unexpected exceptions are logged and sanitized before reaching
+the model. OAuth and per-tool scopes use the same `Authorization` and
+`get_principal()` APIs as the SDK-backed mount.
 
 See [examples/workers](examples/workers). The Workers surface is stateless and
 does not advertise server-initiated streams or session state. Use the default

@@ -2,6 +2,22 @@
 
 All notable changes to hayate-mcp are documented here.
 
+## [0.10.0] - 2026-07-25
+
+### Added
+
+- Add MCP 2025-11-25 tool `_meta` and `execution` fields to the Workers API,
+  while rejecting task-support claims the stateless runtime does not
+  advertise.
+- Add `WorkerProtocolError` so request-aware tools can preserve deliberate
+  JSON-RPC codes, HTTP statuses, and headers for edge authentication,
+  throttling, and unavailable dependencies.
+
+### Changed
+
+- Return JSON Schema input failures as model-visible `isError` tool results,
+  matching the official SDK and the MCP guidance for correctable input errors.
+
 ## [0.9.0] - 2026-07-25
 
 ### Added

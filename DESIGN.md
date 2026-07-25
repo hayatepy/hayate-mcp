@@ -123,11 +123,15 @@ sampling / tasks / GET SSE は広告しない。
   Workers だけ 2025-06-18 になり、全ランタイム最新準拠という契約を破る。
 - **安全境界**: schema validator は最初のリクエスト内で遅延 import し、
   workerd の global-scope entropy 制約を回避する。未知の例外はログにだけ残して
-  model には sanitize した `isError` result を返す。
+  model には sanitize した `isError` result を返す。入力 schema 違反も公式 SDK と
+  同じく model-correctable な `isError` とし、未知 tool / malformed envelope だけを
+  protocol error にする。
 - **host context**: `register(app)` 経由では現在の hayate `Context` を ContextVar で
   tool handler へ伝播し、`get_request_context()` から header / `c.env` / `c.get()` を
   再利用できる。model-visible tool argument に認証・binding を混ぜず、並行 request 間で
   state を共有しない。純粋な `fetch(Request)` には host context を捏造しない。
+  app 固有の認証・rate limit・依存障害は `WorkerProtocolError` で JSON-RPC code と
+  HTTP status/header を同時に保持する。
 - **適合証拠**: unit test、公式 SDK model validation、uvicorn E2E、
   workerd 上の公式 SDK client E2E を CI に常設する。
 

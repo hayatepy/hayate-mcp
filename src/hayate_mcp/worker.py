@@ -47,11 +47,67 @@ class ToolError(Exception):
 
 
 class _ProtocolError(Exception):
-    def __init__(self, code: int, message: str, data: Any = _MISSING) -> None:
+    def __init__(
+        self,
+        code: int,
+        message: str,
+        data: Any = _MISSING,
+        *,
+        status: int = 200,
+        headers: Mapping[str, str] | None = None,
+    ) -> None:
         self.code = code
         self.message = message
         self.data = data
+        self.status = status
+        self.headers = dict(headers or {})
         super().__init__(message)
+
+
+class WorkerProtocolError(_ProtocolError):
+    """A deliberate JSON-RPC error raised by a Workers tool handler.
+
+    ``status`` and ``headers`` let an application preserve HTTP authentication,
+    throttling, and dependency-unavailable semantics around a valid MCP error.
+    """
+
+    def __init__(
+        self,
+        code: int,
+        message: str,
+        *,
+        status: int = 200,
+        headers: Mapping[str, str] | None = None,
+        data: Any = _MISSING,
+    ) -> None:
+        if not isinstance(code, int) or isinstance(code, bool):
+            raise TypeError("protocol error code must be an integer")
+        if not isinstance(message, str):
+            raise TypeError("protocol error message must be a string")
+        if (
+            not isinstance(status, int)
+            or isinstance(status, bool)
+            or (status != 200 and not 400 <= status <= 599)
+        ):
+            raise ValueError("protocol error status must be 200 or between 400 and 599")
+        if headers is not None and (
+            not isinstance(headers, Mapping)
+            or any(
+                not isinstance(key, str) or not isinstance(value, str)
+                for key, value in headers.items()
+            )
+        ):
+            raise TypeError("protocol error headers must map strings to strings")
+        if headers is not None and any(
+            "\r" in item or "\n" in item for pair in headers.items() for item in pair
+        ):
+            raise ValueError("protocol error headers must not contain newlines")
+        if data is not _MISSING:
+            try:
+                json.dumps(data, allow_nan=False)
+            except (TypeError, ValueError) as exc:
+                raise TypeError("protocol error data must be JSON serializable") from exc
+        super().__init__(code, message, data, status=status, headers=headers)
 
 
 @dataclass(frozen=True)
@@ -66,6 +122,8 @@ class WorkerTool:
     output_schema: dict[str, Any] | None = None
     annotations: dict[str, Any] | None = None
     icons: tuple[dict[str, Any], ...] = ()
+    meta: dict[str, Any] | None = None
+    execution: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or not _TOOL_NAME.fullmatch(self.name):
@@ -85,6 +143,14 @@ class WorkerTool:
             raise TypeError("tool annotations do not match MCP ToolAnnotations")
         if not all(_icon_valid(icon) for icon in self.icons):
             raise TypeError("tool icons do not match MCP Icon")
+        if self.meta is not None and not isinstance(self.meta, dict):
+            raise TypeError("tool meta must be an object")
+        if self.execution is not None and (
+            not isinstance(self.execution, dict)
+            or set(self.execution) - {"taskSupport"}
+            or self.execution.get("taskSupport", "forbidden") != "forbidden"
+        ):
+            raise TypeError("Workers tools only support execution.taskSupport='forbidden'")
         try:
             json.dumps(self.wire(), allow_nan=False)
         except (TypeError, ValueError) as exc:
@@ -102,6 +168,10 @@ class WorkerTool:
             value["annotations"] = self.annotations
         if self.icons:
             value["icons"] = list(self.icons)
+        if self.meta is not None:
+            value["_meta"] = self.meta
+        if self.execution is not None:
+            value["execution"] = self.execution
         return value
 
 
@@ -146,6 +216,8 @@ class WorkerMcpServer:
         output_schema: dict[str, Any] | None = None,
         annotations: dict[str, Any] | None = None,
         icons: Sequence[dict[str, Any]] = (),
+        meta: dict[str, Any] | None = None,
+        execution: dict[str, Any] | None = None,
     ) -> Callable[[ToolHandler], ToolHandler]:
         """Register a tool while keeping the decorated callable unchanged."""
 
@@ -161,6 +233,8 @@ class WorkerMcpServer:
                 output_schema=output_schema,
                 annotations=annotations,
                 icons=tuple(icons),
+                meta=meta,
+                execution=execution,
             )
             self._validators = None
             return handler
@@ -232,10 +306,10 @@ class WorkerMcpServer:
         validator = self._validator(name, "input")
         errors = sorted(validator.iter_errors(arguments), key=lambda error: list(error.path))
         if errors:
-            raise _ProtocolError(
-                -32602,
-                "Invalid tool arguments",
-                {"validationErrors": [_validation_error(error) for error in errors[:8]]},
+            messages = "; ".join(error.message for error in errors[:8])
+            return _text_result(
+                f"Input validation error: {messages}",
+                is_error=True,
             )
 
         try:
@@ -243,6 +317,8 @@ class WorkerMcpServer:
             if inspect.isawaitable(outcome):
                 outcome = await outcome
             result = _normalize_tool_result(outcome)
+        except WorkerProtocolError:
+            raise
         except ToolError as exc:
             result = _text_result(str(exc), is_error=True)
         except Exception:
@@ -397,10 +473,15 @@ class WorkerMcpMount:
             if exc.data is not _MISSING:
                 error["data"] = exc.data
             response = {"jsonrpc": "2.0", "id": message["id"], "error": error}
+            status = exc.status
+            headers = exc.headers
+        else:
+            status = 200
+            headers = {}
         return Response(
             _json_dumps(response),
-            status=200,
-            headers={"content-type": CONTENT_TYPE_JSON},
+            status=status,
+            headers={**headers, "content-type": CONTENT_TYPE_JSON},
         )
 
     def _protocol_version_ok(self, raw: Request) -> bool:
@@ -620,13 +701,6 @@ def _text_result(text: str, *, is_error: bool = False) -> dict[str, Any]:
     if is_error:
         result["isError"] = True
     return result
-
-
-def _validation_error(error: Any) -> dict[str, Any]:
-    return {
-        "path": "/" + "/".join(str(part) for part in error.absolute_path),
-        "message": error.message,
-    }
 
 
 def _media_type(value: str | None) -> str:
