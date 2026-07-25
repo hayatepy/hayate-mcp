@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-__version__ = "0.9.0"
+__version__ = "0.10.0"
 
 __all__ = [
     "Authorization",
@@ -22,6 +22,7 @@ __all__ = [
     "ToolError",
     "WorkerMcpMount",
     "WorkerMcpServer",
+    "WorkerProtocolError",
     "WorkerTool",
     "__version__",
     "get_principal",
@@ -35,7 +36,7 @@ if TYPE_CHECKING:
     from .mount import McpMount
     from .principal import get_principal
     from .session import MemorySessionStore
-    from .worker import ToolError, WorkerMcpMount, WorkerMcpServer, WorkerTool
+    from .worker import ToolError, WorkerMcpMount, WorkerMcpServer, WorkerProtocolError, WorkerTool
 
 
 def __getattr__(name: str) -> Any:
@@ -63,13 +64,26 @@ def __getattr__(name: str) -> Any:
         from .context import get_request_context
 
         return get_request_context
-    if name in {"ToolError", "WorkerMcpMount", "WorkerMcpServer", "WorkerTool"}:
-        from .worker import ToolError, WorkerMcpMount, WorkerMcpServer, WorkerTool
+    if name in {
+        "ToolError",
+        "WorkerMcpMount",
+        "WorkerMcpServer",
+        "WorkerProtocolError",
+        "WorkerTool",
+    }:
+        from .worker import (
+            ToolError,
+            WorkerMcpMount,
+            WorkerMcpServer,
+            WorkerProtocolError,
+            WorkerTool,
+        )
 
         return {
             "ToolError": ToolError,
             "WorkerMcpMount": WorkerMcpMount,
             "WorkerMcpServer": WorkerMcpServer,
+            "WorkerProtocolError": WorkerProtocolError,
             "WorkerTool": WorkerTool,
         }[name]
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

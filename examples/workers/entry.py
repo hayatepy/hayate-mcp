@@ -30,6 +30,7 @@ def build_server() -> WorkerMcpServer:
             "required": ["text"],
             "additionalProperties": False,
         },
+        execution={"taskSupport": "forbidden"},
     )
     async def echo(arguments: dict) -> str:
         assert get_request_context() is not None

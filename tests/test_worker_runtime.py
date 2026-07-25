@@ -15,6 +15,7 @@ from hayate_mcp import (
     ToolError,
     WorkerMcpMount,
     WorkerMcpServer,
+    WorkerProtocolError,
     get_principal,
 )
 
@@ -81,6 +82,8 @@ def build_server() -> WorkerMcpServer:
         },
         annotations={"readOnlyHint": True},
         icons=({"src": "https://example.test/echo.png", "mimeType": "image/png"},),
+        meta={"com.example/audit": "read-only"},
+        execution={"taskSupport": "forbidden"},
     )
     async def echo(arguments):
         return f"echo: {arguments['text']}"
@@ -142,6 +145,8 @@ async def test_tools_list_and_call_are_accepted_by_official_sdk_models(worker_mo
     assert tool["name"] == "echo"
     assert tool["title"] == "Echo"
     assert tool["inputSchema"]["additionalProperties"] is False
+    assert tool["_meta"] == {"com.example/audit": "read-only"}
+    assert tool["execution"] == {"taskSupport": "forbidden"}
 
     called = await worker_mount.fetch(
         request(
@@ -172,7 +177,7 @@ async def test_structured_output_is_checked_against_output_schema(worker_mount):
     assert (await response.json())["result"]["structuredContent"] == {"answer": 42}
 
 
-async def test_invalid_arguments_are_a_protocol_error(worker_mount):
+async def test_invalid_arguments_are_a_model_correctable_tool_error(worker_mount):
     response = await worker_mount.fetch(
         request(
             {
@@ -183,10 +188,11 @@ async def test_invalid_arguments_are_a_protocol_error(worker_mount):
             }
         )
     )
-    error = (await response.json())["error"]
-    assert error["code"] == -32602
-    assert error["message"] == "Invalid tool arguments"
-    assert len(error["data"]["validationErrors"]) == 2
+    result = (await response.json())["result"]
+    assert result["isError"] is True
+    assert result["content"][0]["text"].startswith("Input validation error:")
+    assert "non-empty" in result["content"][0]["text"]
+    assert "Additional properties" in result["content"][0]["text"]
 
 
 @pytest.mark.parametrize(
@@ -384,6 +390,58 @@ async def test_expected_tool_errors_are_visible_and_exceptions_are_sanitized(cap
     assert result["content"][0]["text"] == "Tool execution failed"
     assert "secret internals" not in json.dumps(result)
     assert "secret internals" in caplog.text
+
+
+async def test_tool_handler_can_preserve_http_error_semantics() -> None:
+    server = WorkerMcpServer("protected", version="1")
+
+    @server.tool(name="protected", input_schema={"type": "object"})
+    def protected(_arguments):
+        raise WorkerProtocolError(
+            -32001,
+            "Authentication is required.",
+            status=401,
+            headers={
+                "content-type": "text/plain",
+                "www-authenticate": "Bearer",
+            },
+        )
+
+    response = await WorkerMcpMount(server).fetch(
+        request(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "protected", "arguments": {}},
+            }
+        )
+    )
+
+    assert response.status == 401
+    assert response.headers.get("content-type") == "application/json"
+    assert response.headers.get("www-authenticate") == "Bearer"
+    assert (await response.json())["error"] == {
+        "code": -32001,
+        "message": "Authentication is required.",
+    }
+
+
+@pytest.mark.parametrize(
+    "execution",
+    [
+        {"taskSupport": "optional"},
+        {"taskSupport": "required"},
+        {"taskSupport": "forbidden", "unknown": True},
+    ],
+)
+def test_worker_tool_rejects_unadvertised_task_execution(execution) -> None:
+    server = WorkerMcpServer("tasks", version="1")
+    with pytest.raises(TypeError, match="taskSupport='forbidden'"):
+
+        @server.tool(name="task", input_schema={"type": "object"}, execution=execution)
+        def task(_arguments):
+            return "no"
 
 
 async def test_all_2025_11_25_content_block_shapes_are_emitted(worker_mount):
