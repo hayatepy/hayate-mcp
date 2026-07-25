@@ -1,0 +1,13 @@
+{
+  "name": "hayate-mcp-conformance",
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/conformance": "0.1.16"
+  },
+  "overrides": {
+    "@hono/node-server": "2.0.11"
+  }
+}

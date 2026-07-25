@@ -24,6 +24,7 @@ from pydantic import ValidationError
 
 from .authorization import Authorization
 from .context import request_context
+from .origin import origin_allowed
 from .principal import Principal, principal_context, principal_identity
 from .session import McpSession, MemorySessionStore
 
@@ -302,10 +303,11 @@ class McpMount:
     def _origin_allowed(self, raw: Request) -> bool:
         """MCP spec MUST: validate Origin to block DNS-rebinding. Requests
         without an Origin (curl, SDKs) are non-browser and pass."""
-        origin = raw.headers.get("origin")
-        if origin is None or origin == "null":
-            return origin != "null"
-        return origin == raw.url.origin or origin in self.trusted_origins
+        return origin_allowed(
+            raw.headers.get("origin"),
+            raw.url.origin,
+            self.trusted_origins,
+        )
 
     def _metadata_path(self) -> str:
         # RFC 9728 §3.1 path-insertion form, derived from the resource

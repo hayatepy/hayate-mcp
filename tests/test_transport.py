@@ -1,8 +1,11 @@
 """Streamable HTTP transport against the pure fetch core."""
 
+import json
+
 from hayate import Request
 
-from conftest import INITIALIZE, LIST_TOOLS, call_tool, handshake, rpc_request
+from conftest import INITIALIZE, LIST_TOOLS, build_server, call_tool, handshake, rpc_request
+from hayate_mcp import McpMount
 
 
 async def test_initialize_starts_a_session(mount):
@@ -69,6 +72,31 @@ async def test_cross_origin_is_403(mount):
 async def test_same_origin_and_trusted_origin_pass(mount):
     res = await mount.fetch(rpc_request(INITIALIZE, origin="http://localhost"))
     assert res.status == 200
+
+
+async def test_reflected_host_does_not_bypass_origin_validation(mount):
+    request = rpc_request(INITIALIZE, origin="http://evil.example")
+    request.url = type(request.url)("http://evil.example/mcp")
+    res = await mount.fetch(request)
+    assert res.status == 403
+
+
+async def test_explicit_trusted_browser_origin_passes():
+    trusted = McpMount(build_server(), trusted_origins=["https://console.example"])
+    res = await trusted.fetch(
+        Request(
+            "https://api.example/mcp",
+            method="POST",
+            headers={
+                "content-type": "application/json",
+                "accept": "application/json, text/event-stream",
+                "origin": "https://console.example",
+            },
+            body=json.dumps(INITIALIZE),
+        )
+    )
+    assert res.status == 200
+    await trusted.store.close_all()
 
 
 async def test_batch_bodies_are_rejected(mount):
