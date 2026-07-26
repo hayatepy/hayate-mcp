@@ -1,7 +1,8 @@
 """MCP Authorization: the OAuth 2.0 Resource Server side (DESIGN §5, v0.4).
 
 Normative: MCP Authorization (2025-11-25) + RFC 9728 (OAuth 2.0 Protected
-Resource Metadata) + RFC 6750 (Bearer). An authorized MCP server:
+Resource Metadata) + RFC 6750 (Bearer). RFC 9449 DPoP is available as an
+opt-in extension. An authorized MCP server:
 
 - serves its Protected Resource Metadata at the RFC 9728 §3.1 well-known
   URI (``/.well-known/oauth-protected-resource`` with the resource's path
@@ -10,18 +11,20 @@ Resource Metadata) + RFC 6750 (Bearer). An authorized MCP server:
   Bearer resource_metadata="<that URL>"`` header, so the client can discover
   where to get a token (RFC 9728 §5.1).
 
-Token *verification* is injected — ``verify_token(token) -> claims | None`` —
-so the authorization server (hayate-auth, or any RFC 6749 AS) stays a
-separate concern. This is the resource-server half of the "MCP server + its
-AS in one app" story; the AS half lives in hayate-auth.
+Token *verification* is injected. Stable Bearer clients use
+``verify_token(token) -> claims | None``. Sender-constrained deployments use
+``verify_request(request) -> claims | None`` so the verifier can bind an
+RFC 9449 proof to the method, URI, access token, key, and replay store.
 """
 
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlsplit
+
+from hayate import Request
 
 from .principal import Principal
 
@@ -30,18 +33,27 @@ LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 # verify_token: the raw Bearer credential -> claims dict if valid, else None.
 VerifyToken = Callable[[str], Awaitable[dict[str, Any] | None]]
+VerifyRequest = Callable[[Request], Awaitable[dict[str, Any] | None]]
 
 
 @dataclass
 class Authorization:
     resource: str
     authorization_servers: list[str]
-    verify_token: VerifyToken
+    verify_token: VerifyToken | None = None
     scopes_supported: list[str] = field(default_factory=list)
     required_scopes: list[str] = field(default_factory=list)
     bearer_methods_supported: list[str] = field(default_factory=lambda: ["header"])
+    verify_request: VerifyRequest | None = None
+    authorization_scheme: Literal["Bearer", "DPoP"] = "Bearer"
 
     def __post_init__(self) -> None:
+        if self.authorization_scheme not in ("Bearer", "DPoP"):
+            raise ValueError("authorization_scheme must be 'Bearer' or 'DPoP'")
+        if (self.verify_token is None) == (self.verify_request is None):
+            raise ValueError("configure exactly one of verify_token or verify_request")
+        if self.authorization_scheme == "DPoP" and self.verify_request is None:
+            raise ValueError("DPoP requires a request-aware verify_request callable")
         resource = urlsplit(self.resource)
         try:
             _resource_port = resource.port
@@ -96,8 +108,9 @@ class Authorization:
         doc: dict[str, Any] = {
             "resource": self.resource,
             "authorization_servers": list(self.authorization_servers),
-            "bearer_methods_supported": list(self.bearer_methods_supported),
         }
+        if self.authorization_scheme == "Bearer":
+            doc["bearer_methods_supported"] = list(self.bearer_methods_supported)
         if self.scopes_supported:
             doc["scopes_supported"] = list(self.scopes_supported)
         return doc
@@ -125,21 +138,33 @@ class Authorization:
             parts.insert(0, f'error="{error}"')
         if scopes:
             parts.append(f'scope="{" ".join(scopes)}"')
-        return "Bearer " + ", ".join(parts)
+        return self.authorization_scheme + " " + ", ".join(parts)
 
     async def authenticate(self, authorization_header: str | None) -> Principal | None:
-        """Return normalized verified claims, or None if absent/invalid."""
-        if authorization_header is None:
+        """Verify a token-only authorization header (the stable Bearer path)."""
+        if authorization_header is None or self.verify_token is None:
             return None
         scheme, _, credential = authorization_header.partition(" ")
         credential = credential.strip()
         if (
-            scheme.lower() != "bearer"
+            scheme.lower() != self.authorization_scheme.lower()
             or not credential
             or any(character.isspace() for character in credential)
         ):
             return None
         claims = await self.verify_token(credential)
+        return self._principal(claims)
+
+    async def authenticate_request(self, request: Request) -> Principal | None:
+        """Verify and normalize one complete immutable Fetch request."""
+        raw = getattr(request, "raw", request)
+        if self.verify_request is None:
+            return await self.authenticate(raw.headers.get("authorization"))
+        claims = await self.verify_request(raw)
+        return self._principal(claims)
+
+    @staticmethod
+    def _principal(claims: dict[str, Any] | None) -> Principal | None:
         if claims is None:
             return None
         principal = dict(claims)

@@ -122,6 +122,30 @@ Insufficient global or per-tool scopes return 403 with the MCP 2025-11-25
 `WWW-Authenticate` step-up challenge. Stateful sessions are bound to the
 creating `(issuer, client_id, subject)` identity.
 
+RFC 9449 DPoP is available without changing the stable Bearer default. A
+sender-constrained verifier needs the complete request, not just the opaque
+token:
+
+```python
+from hayate_mcp import Authorization
+
+authorization = Authorization(
+    resource="https://folio.example/mcp",
+    authorization_servers=["https://auth.example"],
+    verify_request=dpop_request_verifier,  # async (Request) -> claims | None
+    authorization_scheme="DPoP",
+    scopes_supported=["mcp"],
+    required_scopes=["mcp"],
+)
+```
+
+Both `McpMount` and `WorkerMcpMount` pass the immutable Fetch `Request` to the
+verifier, allowing it to validate the proof signature, `htm`, `htu`, `ath`,
+token `cnf.jkt`, and replay state. hayate-auth provides a compatible
+`DPoPRequestVerifier`. Current official MCP SDK OAuth clients model Bearer
+tokens only, so DPoP remains an explicit client/server extension until SDK
+support lands.
+
 ## Hayate request context
 
 Tools mounted with `register(app)` can reuse request-scoped Hayate state,

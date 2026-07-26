@@ -24,6 +24,10 @@ def test_authorization_canonicalizes_secure_resource_and_issuer():
     assert authorization.resource == "https://mcp.example.com/mcp"
     assert authorization.authorization_servers == ["https://auth.example.com/tenant/"]
 
+    positional = Authorization(RESOURCE, [AS], _verify, ["mcp"], ["mcp"], ["header"])
+    assert positional.scopes_supported == ["mcp"]
+    assert positional.required_scopes == ["mcp"]
+
 
 @pytest.mark.parametrize(
     ("resource", "issuer"),
@@ -113,6 +117,71 @@ async def test_valid_token_is_accepted():
     res = await mount.fetch(rpc_request(INITIALIZE, headers={"authorization": "Bearer good-token"}))
     assert res.status == 200
     assert (await res.json())["result"]["serverInfo"]["name"] == "test-tools"
+
+
+async def test_request_aware_dpop_verifier_receives_the_complete_request():
+    seen = []
+
+    async def verify_request(request):
+        seen.append(request)
+        if (
+            request.method == "POST"
+            and request.url.pathname == "/mcp"
+            and request.headers.get("authorization") == "DPoP good-token"
+            and request.headers.get("dpop") == "proof-for-this-request"
+        ):
+            return {"sub": "dpop-user", "scope": "mcp"}
+        return None
+
+    mount = McpMount(
+        build_server(),
+        stateless=True,
+        authorization=Authorization(
+            resource=RESOURCE,
+            authorization_servers=[AS],
+            verify_request=verify_request,
+            authorization_scheme="DPoP",
+            scopes_supported=["mcp"],
+            required_scopes=["mcp"],
+        ),
+    )
+    metadata = await mount.fetch(rpc_request("", method="GET", path=METADATA_PATH))
+    assert "bearer_methods_supported" not in await metadata.json()
+
+    denied = await mount.fetch(rpc_request(INITIALIZE))
+    assert denied.status == 401
+    assert denied.headers.get("www-authenticate").startswith("DPoP ")
+
+    accepted = await mount.fetch(
+        rpc_request(
+            INITIALIZE,
+            headers={
+                "authorization": "DPoP good-token",
+                "dpop": "proof-for-this-request",
+            },
+        )
+    )
+    assert accepted.status == 200
+    assert len(seen) == 2
+
+
+def test_authorization_requires_one_compatible_verifier():
+    with pytest.raises(ValueError, match="exactly one"):
+        Authorization(resource=RESOURCE, authorization_servers=[AS])
+    with pytest.raises(ValueError, match="exactly one"):
+        Authorization(
+            resource=RESOURCE,
+            authorization_servers=[AS],
+            verify_token=_verify,
+            verify_request=lambda _request: _verify("good-token"),
+        )
+    with pytest.raises(ValueError, match="request-aware"):
+        Authorization(
+            resource=RESOURCE,
+            authorization_servers=[AS],
+            verify_token=_verify,
+            authorization_scheme="DPoP",
+        )
 
 
 async def test_required_scope_is_enforced_and_advertised():

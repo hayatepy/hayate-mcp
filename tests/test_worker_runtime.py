@@ -607,6 +607,43 @@ async def test_worker_authorization_scopes_and_principal():
     assert (await called.json())["result"]["content"][0]["text"] == "user-1"
 
 
+async def test_worker_request_aware_dpop_authorization():
+    async def verify_request(raw):
+        if (
+            raw.method == "POST"
+            and raw.headers.get("authorization") == "DPoP worker-token"
+            and raw.headers.get("dpop") == "worker-proof"
+        ):
+            return {"sub": "worker-dpop-user", "scope": "mcp"}
+        return None
+
+    server = WorkerMcpServer("secured-dpop", version="1")
+    mount = WorkerMcpMount(
+        server,
+        authorization=Authorization(
+            resource="http://localhost/mcp",
+            authorization_servers=["http://localhost"],
+            verify_request=verify_request,
+            authorization_scheme="DPoP",
+            required_scopes=["mcp"],
+        ),
+    )
+    denied = await mount.fetch(request({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}))
+    assert denied.status == 401
+    assert denied.headers.get("www-authenticate").startswith("DPoP ")
+
+    accepted = await mount.fetch(
+        request(
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+            headers={
+                "authorization": "DPoP worker-token",
+                "dpop": "worker-proof",
+            },
+        )
+    )
+    assert accepted.status == 200
+
+
 def test_tool_registration_rejects_invalid_definitions():
     server = WorkerMcpServer("validation", version="1")
     with pytest.raises(ValueError, match="tool name"):
