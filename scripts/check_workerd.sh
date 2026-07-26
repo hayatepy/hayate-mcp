@@ -8,6 +8,15 @@ port=8790
 server_pid=""
 real_node="$(command -v node)"
 node_shim_dir="${test_dir}/node-shim"
+hayate_wheel="${HAYATE_ECOSYSTEM_WHEEL:-}"
+
+if [[ -n "${hayate_wheel}" ]]; then
+  if [[ ! -f "${hayate_wheel}" || "${hayate_wheel}" != *.whl ]]; then
+    echo "HAYATE_ECOSYSTEM_WHEEL must name an existing wheel: ${hayate_wheel}" >&2
+    exit 2
+  fi
+  hayate_wheel="$(cd "$(dirname "${hayate_wheel}")" && pwd)/$(basename "${hayate_wheel}")"
+fi
 
 cleanup() {
   if [[ -n "${server_pid}" ]] && kill -0 "${server_pid}" 2>/dev/null; then
@@ -46,6 +55,16 @@ ln -s "${repo_dir}/scripts/node_pyodide_compat.sh" "${node_shim_dir}/node"
       "${wheel_path}" \
       workers-runtime-sdk
   cp -R .venv-workers/pyodide-venv/lib/python3.13/site-packages/. python_modules/
+  if [[ -n "${hayate_wheel}" ]]; then
+    # pywrangler resolves pylock.toml against PyPI and rejects uv override
+    # files. The core ecosystem gate supplies an unpublished pure-Python
+    # Hayate wheel after that sync so workerd exercises the commit under test.
+    uv pip install \
+      --target python_modules \
+      --reinstall \
+      --no-deps \
+      "${hayate_wheel}"
+  fi
   test -e python_modules/hayate
   test -e python_modules/jsonschema
   test -e python_modules/hayate_mcp
