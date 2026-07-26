@@ -409,7 +409,7 @@ class WorkerMcpMount:
         principal: Principal | None = None
         if self.authorization is not None:
             authorization_header = raw.headers.get("authorization")
-            principal = await self.authorization.authenticate(authorization_header)
+            principal = await self.authorization.authenticate_request(raw)
             if principal is None:
                 return self._unauthorized(
                     error="invalid_token" if authorization_header is not None else None

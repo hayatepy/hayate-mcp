@@ -4,6 +4,12 @@ All notable changes to hayate-mcp are documented here.
 
 ## Unreleased
 
+### Added
+
+- Add an opt-in request-aware authorization verifier and DPoP challenge mode
+  to both ASGI and Workers mounts, allowing RFC 9449 method, URI, access-token,
+  key-binding, and replay validation while preserving the stable Bearer API.
+
 ## [0.10.1] - 2026-07-26
 
 ### Security
