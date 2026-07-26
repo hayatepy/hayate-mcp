@@ -68,6 +68,7 @@ def rpc_request(
     method: str = "POST",
     origin: str | None = None,
     path: str = "/mcp",
+    url: str | None = None,
     headers: dict[str, str] | None = None,
 ) -> Request:
     accept = "text/event-stream" if method == "GET" else "application/json, text/event-stream"
@@ -80,7 +81,7 @@ def rpc_request(
     body = payload if isinstance(payload, str) else json.dumps(payload)
     if method in ("GET", "DELETE"):
         body = None
-    return Request(f"http://localhost{path}", method=method, headers=headers, body=body)
+    return Request(url or f"http://localhost{path}", method=method, headers=headers, body=body)
 
 
 async def handshake(mount) -> str:
