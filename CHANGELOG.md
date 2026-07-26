@@ -4,6 +4,8 @@ All notable changes to hayate-mcp are documented here.
 
 ## Unreleased
 
+## [0.11.0] - 2026-07-27
+
 ### Added
 
 - Add an opt-in request-aware authorization verifier and DPoP challenge mode
