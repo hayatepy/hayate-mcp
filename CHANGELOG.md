@@ -4,6 +4,8 @@ All notable changes to hayate-mcp are documented here.
 
 ## Unreleased
 
+## [0.10.1] - 2026-07-26
+
 ### Security
 
 - Reject DNS-rebinding requests whose attacker-controlled `Host` and `Origin`
@@ -14,6 +16,11 @@ All notable changes to hayate-mcp are documented here.
 
 - Run 31 applicable MCP 2025-11-25 server scenarios from the pinned official
   conformance runner in CI, without expected-failure baselines.
+
+### Changed
+
+- Link the canonical ecosystem start page, production golden app, and tested
+  compatibility evidence from the published package description.
 
 ## [0.10.0] - 2026-07-25
 
