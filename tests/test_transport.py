@@ -75,8 +75,11 @@ async def test_same_origin_and_trusted_origin_pass(mount):
 
 
 async def test_reflected_host_does_not_bypass_origin_validation(mount):
-    request = rpc_request(INITIALIZE, origin="http://evil.example")
-    request.url = type(request.url)("http://evil.example/mcp")
+    request = rpc_request(
+        INITIALIZE,
+        origin="http://evil.example",
+        url="http://evil.example/mcp",
+    )
     res = await mount.fetch(request)
     assert res.status == 403
 

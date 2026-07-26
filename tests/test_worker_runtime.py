@@ -38,6 +38,7 @@ def request(
     headers: dict[str, str] | None = None,
     origin: str | None = None,
     path: str = "/mcp",
+    url: str | None = None,
     protocol_version: str | None = "2025-11-25",
 ):
     merged = {
@@ -55,7 +56,7 @@ def request(
     if method in ("GET", "DELETE"):
         body = None
     return Request(
-        f"http://localhost{path}",
+        url or f"http://localhost{path}",
         method=method,
         headers=merged,
         body=body,
@@ -303,8 +304,11 @@ async def test_transport_media_origin_version_and_methods(worker_mount):
     assert wrong_origin.status == 403
     null_origin = await worker_mount.fetch(request(INITIALIZE, origin="null"))
     assert null_origin.status == 403
-    reflected_host = request(INITIALIZE, origin="https://evil.example")
-    reflected_host.url = type(reflected_host.url)("https://evil.example/mcp")
+    reflected_host = request(
+        INITIALIZE,
+        origin="https://evil.example",
+        url="https://evil.example/mcp",
+    )
     assert (await worker_mount.fetch(reflected_host)).status == 403
 
     bad_version = await worker_mount.fetch(
