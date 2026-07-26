@@ -1,5 +1,9 @@
 # hayate-mcp
 
+> **Hayate ecosystem:** [Start here](https://github.com/hayatepy/.github/blob/main/docs/START.md)
+> · [Production golden app](https://github.com/hayatepy/golden-app)
+> · [Tested compatibility](https://github.com/hayatepy/.github/blob/main/docs/COMPATIBILITY.md)
+
 Mount an MCP server into a [hayate](https://github.com/hayatepy/hayate) app:
 an official [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk)
 bridge for ASGI and a focused, Pydantic-free tools runtime for Cloudflare
