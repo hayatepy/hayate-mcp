@@ -4,10 +4,11 @@ Spec: modelcontextprotocol.io, Streamable HTTP transport, tracking the SDK's
 latest revision (2025-11-25 with mcp>=1.28 on CPython). POST carries JSON-RPC
 and replies with a single JSON body; GET opens the optional server-initiated
 SSE stream (one per session); DELETE terminates a session. The
-``MCP-Protocol-Version`` header is validated against the SDK's
-``SUPPORTED_PROTOCOL_VERSIONS`` (unsupported -> 400). Resumability
-(Last-Event-ID) is out until it can live in the Durable Object store
-(DESIGN §4).
+Each stateful session binds the version selected by its successful
+``initialize`` response, then validates ``MCP-Protocol-Version`` against that
+exact revision (mismatch -> 400). Stateless requests validate against the
+SDK's globally supported revisions. Resumability (Last-Event-ID) is out until
+it can live in the Durable Object store (DESIGN §4).
 """
 
 from __future__ import annotations
@@ -91,11 +92,14 @@ class McpMount:
         if not self._origin_allowed(raw):
             return problem(403, title="Origin not allowed")
 
-        # MCP-Protocol-Version header (transports spec, 2025-06-18+): an
-        # unsupported value is a hard 400. GET/DELETE carry no body, so this
-        # is the only place they can declare a version; for POST the header
-        # is absent on the initialize request and validated afterwards.
-        if raw.method in ("GET", "DELETE") and not self._protocol_version_ok(raw):
+        # A stateless request has no session whose negotiated revision can be
+        # consulted. Stateful GET/DELETE are checked only after resolving the
+        # session and its owner, alongside POST.
+        if (
+            self.stateless
+            and raw.method in ("GET", "DELETE")
+            and not self._supported_protocol_version(raw)
+        ):
             return problem(400, title="Unsupported MCP-Protocol-Version")
 
         principal: Principal | None = None
@@ -118,13 +122,26 @@ class McpMount:
                 return self._get(raw, principal)
             return problem(405, title="Method Not Allowed", headers={"allow": "GET, POST, DELETE"})
 
-    def _protocol_version_ok(self, raw: Request) -> bool:
-        """True unless the client declared a version this server can't speak.
+    def _supported_protocol_version(self, raw: Request) -> bool:
+        """True unless a stateless client declares an unsupported revision.
 
         A missing header passes (the transports spec says assume 2025-03-26
         for back-compat); a present-but-unsupported value must 400."""
         version = raw.headers.get(PROTOCOL_VERSION_HEADER)
         return version is None or version in SUPPORTED_PROTOCOL_VERSIONS
+
+    @staticmethod
+    def _session_protocol_version_ok(raw: Request, session: McpSession) -> bool:
+        """Validate against the one revision negotiated for this session.
+
+        When the header is absent, the session itself is the transport's
+        other way to identify the negotiated version, as allowed by the
+        backwards-compatibility rule in the Streamable HTTP specification.
+        """
+        version = raw.headers.get(PROTOCOL_VERSION_HEADER)
+        return session.protocol_version is not None and (
+            version is None or version == session.protocol_version
+        )
 
     # -- verbs -------------------------------------------------------------------------
 
@@ -157,11 +174,35 @@ class McpMount:
         is_initialize = (
             isinstance(message.root, JSONRPCRequest) and message.root.method == "initialize"
         )
-        # The MCP-Protocol-Version header is sent on every request *after*
-        # initialize; validate it there (initialize has no negotiated version
-        # yet, so it is exempt).
-        if not is_initialize and not self._protocol_version_ok(raw):
+        # initialize has no negotiated version yet. A stateless request can
+        # only be checked against the SDK's supported set; a stateful request
+        # is checked against its exact session version after session lookup.
+        if not is_initialize and self.stateless and not self._supported_protocol_version(raw):
             return problem(400, title="Unsupported MCP-Protocol-Version")
+
+        session: McpSession | None = None
+        if not self.stateless:
+            owner = principal_identity(principal)
+            if is_initialize:
+                session = McpSession(
+                    self.server,
+                    self.initialization_options,
+                    id=self.session_id,
+                    owner=owner,
+                )
+                await self.store.add(session)
+            else:
+                session_id = raw.headers.get(SESSION_HEADER)
+                if session_id is None:
+                    return problem(400, title=f"Missing {SESSION_HEADER} header")
+                existing = self.store.get(session_id)
+                if existing is None:
+                    return problem(404, title="Session not found")
+                if existing.owner != owner:
+                    return problem(404, title="Session not found")
+                session = existing
+                if not self._session_protocol_version_ok(raw, session):
+                    return problem(400, title="MCP-Protocol-Version does not match session")
 
         if self.authorization is not None:
             assert principal is not None
@@ -172,32 +213,32 @@ class McpMount:
 
         if self.stateless:
             return await self._post_stateless(message)
-
-        owner = principal_identity(principal)
-        if is_initialize:
-            session = McpSession(
-                self.server,
-                self.initialization_options,
-                id=self.session_id,
-                owner=owner,
-            )
-            await self.store.add(session)
-        else:
-            session_id = raw.headers.get(SESSION_HEADER)
-            if session_id is None:
-                return problem(400, title=f"Missing {SESSION_HEADER} header")
-            existing = self.store.get(session_id)
-            if existing is None:
-                return problem(404, title="Session not found")
-            if existing.owner != owner:
-                return problem(404, title="Session not found")
-            session = existing
+        assert session is not None
 
         if isinstance(message.root, JSONRPCRequest):
-            reply = await session.request(message)
+            try:
+                reply = await session.request(message)
+            except BaseException:
+                if is_initialize:
+                    await self.store.remove(session.id)
+                raise
             headers = {"content-type": "application/json"}
             if is_initialize:
-                headers[SESSION_HEADER] = session.id
+                root = reply.root
+                if isinstance(root, JSONRPCResponse):
+                    version = root.result.get("protocolVersion")
+                    if not isinstance(version, str) or not version:
+                        await self.store.remove(session.id)
+                        return problem(
+                            500,
+                            title="MCP initialize response did not select a protocol version",
+                        )
+                    session.bind_protocol_version(version)
+                    headers[SESSION_HEADER] = session.id
+                else:
+                    # A rejected initialize never creates a usable transport
+                    # session and therefore must not return a session id.
+                    await self.store.remove(session.id)
             return Response(
                 reply.model_dump_json(by_alias=True, exclude_none=True),
                 status=200,
@@ -276,6 +317,8 @@ class McpMount:
             return problem(404, title="Session not found")
         if session.owner != principal_identity(principal):
             return problem(404, title="Session not found")
+        if not self._session_protocol_version_ok(raw, session):
+            return problem(400, title="MCP-Protocol-Version does not match session")
         if not session.claim_stream():
             return problem(409, title="A stream is already open for this session")
         return Response(
@@ -294,6 +337,8 @@ class McpMount:
         session = self.store.get(session_id)
         if session is None or session.owner != principal_identity(principal):
             return problem(404, title="Session not found")
+        if not self._session_protocol_version_ok(raw, session):
+            return problem(400, title="MCP-Protocol-Version does not match session")
         if not await self.store.remove(session_id):
             return problem(404, title="Session not found")
         return Response(None, status=200)

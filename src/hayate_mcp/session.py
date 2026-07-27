@@ -37,6 +37,10 @@ class McpSession:
     ) -> None:
         self.id = id if id is not None else secrets.token_hex(16)
         self.owner = owner
+        # Bound from the successful initialize response.  The SDK may
+        # negotiate different supported revisions for different sessions, so
+        # this cannot be a mount-wide constant.
+        self.protocol_version: str | None = None
         self.last_seen = time.monotonic()
         self._pending: dict[Any, asyncio.Future[JSONRPCMessage]] = {}
         # Server-initiated traffic for the optional GET stream (v0.2). One
@@ -60,6 +64,12 @@ class McpSession:
 
     def touch(self) -> None:
         self.last_seen = time.monotonic()
+
+    def bind_protocol_version(self, version: str) -> None:
+        """Pin the one MCP revision negotiated for this session."""
+        if self.protocol_version is not None and self.protocol_version != version:
+            raise RuntimeError("MCP session protocol version is already bound")
+        self.protocol_version = version
 
     async def _read_loop(self) -> None:
         try:

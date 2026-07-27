@@ -68,7 +68,7 @@ stdio transport(SDK が既に提供)。
 | 対象 | 文書 | 対応 |
 |---|---|---|
 | MCP | modelcontextprotocol.io spec — **Streamable HTTP transport**。最新 stable **2025-11-25**。**2026-07-28 が RC** | ASGI は SDK、Workers は広告した lifecycle / ping / tools surface を実装。`MCP-Protocol-Version` を検証 |
-| MCP-Protocol-Version | Streamable HTTP transport(2025-06-18+) | initialize 後の全リクエストで未対応値を 400。ASGI は SDK の対応版を受理し欠落時は旧版互換、2025-11-25 専用の Workers は欠落も 400 |
+| MCP-Protocol-Version | Streamable HTTP transport(2025-06-18+) | ASGI は initialize response の合意版を session ごとに固定し、後続リクエストの異なる値を 400。欠落時は session の合意版を source of truth にする。2025-11-25 専用の Workers は欠落・異なる値とも 400 |
 | JSON-RPC 2.0 | jsonrpc.org | ASGI は SDK、Workers は単一 message envelope・標準 error code・notification 202 を検証 |
 | SSE | WHATWG HTML | ストリーミング応答。本体 `sse.py` を利用 |
 | Origin 検証 | MCP spec(**MUST**)+ RFC 6454 | present かつ invalid な Origin は 403(§5) |
