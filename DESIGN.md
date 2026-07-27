@@ -188,8 +188,8 @@ detached task も作らない。GET は 405、DELETE は no-op 200。
 
 - CPython: `mcp>=1.28.1,<2`
 - Emscripten: `jsonschema>=4.20,<5` と
-  pywrangler 1.15 の Pyodide 0.28.3 index に存在する
-  `rpds-py==0.23.1`
+  Python 3.13 Workers が使用する Pyodide 0.29.4 index に存在する
+  `rpds-py==0.30.0`
 
 これにより両ランタイムが 2025-11-25 を negotiate する。Workers は optional
 capability を部分実装せず、未広告にすることで仕様上の表面積を tools に限定する。

@@ -50,7 +50,7 @@ ln -s "${repo_dir}/scripts/node_pyodide_compat.sh" "${node_shim_dir}/node"
     VIRTUAL_ENV="${test_dir}/.venv-workers/pyodide-venv" \
     uv pip install \
       --no-build \
-      --extra-index-url https://index.pyodide.org/0.28.3 \
+      --extra-index-url https://index.pyodide.org/0.29.4 \
       --index-strategy unsafe-best-match \
       "${wheel_path}" \
       workers-runtime-sdk
@@ -68,6 +68,8 @@ ln -s "${repo_dir}/scripts/node_pyodide_compat.sh" "${node_shim_dir}/node"
   test -e python_modules/hayate
   test -e python_modules/jsonschema
   test -e python_modules/hayate_mcp
+  VIRTUAL_ENV="${test_dir}/.venv-workers/pyodide-venv" \
+    uv pip show rpds-py | grep -Fx "Version: 0.30.0"
 )
 
 # The Workers wheel must stay independent of the Pydantic-based official SDK.

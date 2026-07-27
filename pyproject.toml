@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "hayate-mcp"
-version = "0.11.0"
+version = "0.11.1"
 description = "MCP Streamable HTTP for hayate across ASGI and Cloudflare Workers, with OAuth resource-server support"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -24,9 +24,9 @@ dependencies = [
   "hayate>=0.8.0",
   "mcp>=1.28.1,<2; sys_platform != 'emscripten'",
   "jsonschema>=4.20,<5; sys_platform == 'emscripten'",
-  # pywrangler 1.15 resolves against the ABI-compatible Pyodide 0.28.3
-  # index, whose rpds wasm wheel is 0.23.1.
-  "rpds-py==0.23.1; sys_platform == 'emscripten'",
+  # Python 3.13 Workers currently run Pyodide 0.29.4, whose reviewed
+  # pyemscripten wheel is rpds-py 0.30.0.
+  "rpds-py==0.30.0; sys_platform == 'emscripten'",
 ]
 
 [project.urls]

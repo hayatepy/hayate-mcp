@@ -4,6 +4,14 @@ All notable changes to hayate-mcp are documented here.
 
 ## Unreleased
 
+## [0.11.1] - 2026-07-27
+
+### Fixed
+
+- Refresh the Emscripten `rpds-py` pin to the wheel shipped by Pyodide
+  0.29.4, restoring fresh Cloudflare Workers package syncs with
+  Pywrangler 1.15.
+
 ## [0.11.0] - 2026-07-27
 
 ### Added

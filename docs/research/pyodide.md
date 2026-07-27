@@ -6,14 +6,16 @@
 ## 2026-07-24 更新
 
 SDK 1.12.4 自体は動作したが、MCP 2025-11-25 対応の SDK 1.28.1 は
-Pydantic 2.11+ を要求し、pywrangler 1.15 が解決に使う Pyodide 0.28.3
-index の Pydantic 2.10.6 / pydantic-core 2.27.2 では導入できない。
+Pydantic 2.11+ を要求し、当時 pywrangler 1.15 が解決に使っていた
+Pyodide 0.28.3 index の Pydantic 2.10.6 / pydantic-core 2.27.2 では
+導入できなかった。
 Workers だけ 2025-06-18 に留める判断を撤回し、v0.8 で
 `WorkerMcpServer` / `WorkerMcpMount` を実装した。
 
 - 対応 surface は capability と一致する lifecycle / ping / tools。
 - Emscripten bundle から `mcp` / Pydantic を除去。
-- `jsonschema 4.25.1` と Pyodide wasm wheel の `rpds-py 0.23.1` で
+- `jsonschema 4.25.1` と現行 Pyodide 0.29.4 wasm wheel の
+  `rpds-py 0.30.0` で
   Draft 2020-12 input/output schema を検証。
 - workerd 上で MCP 2025-11-25 initialize → tools/list → tools/call を通し、
   公式 SDK 1.28.1 の `ClientSession` からの相互運用も確認。
