@@ -4,6 +4,20 @@ All notable changes to hayate-mcp are documented here.
 
 ## Unreleased
 
+### Fixed
+
+- Bind every stateful ASGI session to the protocol version returned by its
+  successful initialize response, reject a different revision on later POST,
+  GET, and DELETE requests, and remove sessions whose initialization fails.
+
+### Changed
+
+- Keep strict negotiated-version enforcement when the pinned conformance
+  runner sends a stale revision in its multiple-POST scenario
+  ([upstream #412](https://github.com/modelcontextprotocol/conformance/issues/412));
+  cover the same three concurrent requests locally with the negotiated
+  revision while the other 30 official scenarios remain in the runner gate.
+
 ## [0.11.0] - 2026-07-27
 
 ### Added

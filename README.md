@@ -60,12 +60,16 @@ logging, sampling, tasks, and server-initiated streams are omitted from
 capabilities rather than partially implemented.
 
 CI runs the pinned official MCP conformance runner against a comprehensive
-SDK-backed fixture through this mount. The suite covers all 31 current
-2025-11-25 server scenarios that apply without the optional resumability
-extension, including lifecycle, Streamable HTTP, every SDK capability,
-JSON Schema 2020-12 preservation, and DNS-rebinding protection. Workers keep
-their smaller advertised tools-only denominator and are verified separately
-through workerd with the official SDK client.
+SDK-backed fixture through this mount. The suite covers 30 current 2025-11-25
+server scenarios that apply without the optional resumability extension,
+including lifecycle, Streamable HTTP, every SDK capability, JSON Schema
+2020-12 preservation, and DNS-rebinding protection. The remaining official
+multiple-POST scenario currently sends a non-negotiated protocol version
+([upstream #412](https://github.com/modelcontextprotocol/conformance/issues/412));
+Hayate rejects that mismatch and runs equivalent three-request concurrency
+coverage with the negotiated version locally. Workers keep their smaller
+advertised tools-only denominator and are verified separately through workerd
+with the official SDK client.
 
 Browser requests are accepted automatically only when the endpoint and
 `Origin` are both loopback (`localhost`, `127.0.0.1`, or `::1`). For every
@@ -76,9 +80,14 @@ configuration. The request's reflected `Host` value is never treated as an
 allow-list entry.
 
 After `initialize`, clients send `MCP-Protocol-Version` on every subsequent
-HTTP request. The Workers runtime accepts exactly `2025-11-25`; because it
-does not implement the older fallback revision, a missing or different header
-returns 400.
+HTTP request. Each stateful ASGI session is pinned to the version returned by
+its successful initialize response; a different version returns 400 even when
+the SDK supports that revision for other sessions. If the header is missing,
+ASGI uses the version already bound to the session as the transport's
+backwards-compatible source of truth. The stateless Workers runtime accepts
+exactly `2025-11-25`; because it does not retain a session and does not
+implement the older fallback revision, a missing or different header returns
+400.
 
 ## Authorization (OAuth 2.0 Resource Server)
 

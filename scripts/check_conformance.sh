@@ -64,7 +64,6 @@ scenarios=(
   tools-call-elicitation
   json-schema-2020-12
   elicitation-sep1034-defaults
-  server-sse-multiple-streams
   elicitation-sep1330-enums
   resources-list
   resources-read-text
@@ -80,6 +79,12 @@ scenarios=(
   dns-rebinding-protection
 )
 
+# conformance 0.1.16's server-sse-multiple-streams scenario negotiates
+# 2025-11-25, then hard-codes 2025-03-26 on its raw follow-up POSTs. A
+# session-correct server must reject those requests. Keep the equivalent
+# three-request concurrency coverage in
+# tests/test_protocol_version.py::test_concurrent_posts_use_the_sessions_negotiated_version
+# until https://github.com/modelcontextprotocol/conformance/issues/412 ships.
 for scenario in "${scenarios[@]}"; do
   "${conformance}" server \
     --url "${server_url}" \
