@@ -53,11 +53,12 @@ POST requests must use `Content-Type: application/json` and advertise both
 `application/json` and `text/event-stream` in `Accept`; notifications and
 client responses receive an empty 202. GET must advertise SSE. Plus
 spec-mandated Origin validation (DNS-rebinding defense) and an
-in-memory session store with idle eviction. On ASGI, capabilities, dispatch,
-and versioning stay in the official SDK. The Workers runtime implements only
-the lifecycle, ping, and tools surface it advertises; resources, prompts,
-logging, sampling, tasks, and server-initiated streams are omitted from
-capabilities rather than partially implemented.
+in-memory session store with idle eviction. Only requests that pass session
+ownership and negotiated-version checks refresh the idle deadline. On ASGI,
+capabilities, dispatch, and versioning stay in the official SDK. The Workers
+runtime implements only the lifecycle, ping, and tools surface it advertises;
+resources, prompts, logging, sampling, tasks, and server-initiated streams are
+omitted from capabilities rather than partially implemented.
 
 CI runs the pinned official MCP conformance runner against a comprehensive
 SDK-backed fixture through this mount. The suite covers 30 current 2025-11-25

@@ -9,6 +9,9 @@ All notable changes to hayate-mcp are documented here.
 - Bind every stateful ASGI session to the protocol version returned by its
   successful initialize response, reject a different revision on later POST,
   GET, and DELETE requests, and remove sessions whose initialization fails.
+- Refresh idle-session activity only after ownership, negotiated-version, and
+  request authorization checks pass, so rejected requests cannot keep another
+  session alive or influence eviction order.
 
 ### Changed
 

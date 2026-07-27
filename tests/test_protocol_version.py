@@ -58,6 +58,9 @@ async def test_each_supported_version_is_bound_to_its_own_session(mount):
 async def test_supported_but_non_negotiated_version_is_400(mount):
     session_id, negotiated = await _handshake_version(mount, LATEST_PROTOCOL_VERSION)
     other = next(version for version in SUPPORTED_PROTOCOL_VERSIONS if version != negotiated)
+    session = mount.store.peek(session_id)
+    assert session is not None
+    session.last_seen = -1.0
     res = await mount.fetch(
         rpc_request(
             LIST_TOOLS,
@@ -66,6 +69,7 @@ async def test_supported_but_non_negotiated_version_is_400(mount):
         )
     )
     assert res.status == 400
+    assert session.last_seen == -1.0
 
 
 async def test_two_sessions_can_retain_different_negotiated_versions(mount):

@@ -195,7 +195,7 @@ class McpMount:
                 session_id = raw.headers.get(SESSION_HEADER)
                 if session_id is None:
                     return problem(400, title=f"Missing {SESSION_HEADER} header")
-                existing = self.store.get(session_id)
+                existing = self.store.peek(session_id)
                 if existing is None:
                     return problem(404, title="Session not found")
                 if existing.owner != owner:
@@ -214,6 +214,8 @@ class McpMount:
         if self.stateless:
             return await self._post_stateless(message)
         assert session is not None
+        if not is_initialize:
+            session.touch()
 
         if isinstance(message.root, JSONRPCRequest):
             try:
@@ -312,7 +314,7 @@ class McpMount:
         session_id = raw.headers.get(SESSION_HEADER)
         if session_id is None:
             return problem(400, title=f"Missing {SESSION_HEADER} header")
-        session = self.store.get(session_id)
+        session = self.store.peek(session_id)
         if session is None:
             return problem(404, title="Session not found")
         if session.owner != principal_identity(principal):
@@ -321,6 +323,7 @@ class McpMount:
             return problem(400, title="MCP-Protocol-Version does not match session")
         if not session.claim_stream():
             return problem(409, title="A stream is already open for this session")
+        session.touch()
         return Response(
             sse_stream(session.outbound_events()),
             status=200,
@@ -334,7 +337,7 @@ class McpMount:
         session_id = raw.headers.get(SESSION_HEADER)
         if session_id is None:
             return problem(400, title=f"Missing {SESSION_HEADER} header")
-        session = self.store.get(session_id)
+        session = self.store.peek(session_id)
         if session is None or session.owner != principal_identity(principal):
             return problem(404, title="Session not found")
         if not self._session_protocol_version_ok(raw, session):

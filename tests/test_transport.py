@@ -5,7 +5,7 @@ import json
 from hayate import Request
 
 from conftest import INITIALIZE, LIST_TOOLS, build_server, call_tool, handshake, rpc_request
-from hayate_mcp import McpMount
+from hayate_mcp import McpMount, MemorySessionStore
 
 
 async def test_initialize_starts_a_session(mount):
@@ -30,6 +30,65 @@ async def test_full_tool_flow(mount):
     assert called.status == 200
     content = (await called.json())["result"]["content"]
     assert content[0]["text"] == "echo: hayate"
+
+
+async def test_valid_post_refreshes_idle_timestamp(mount):
+    session_id = await handshake(mount)
+    session = mount.store.peek(session_id)
+    assert session is not None
+    session.last_seen = -1.0
+
+    listed = await mount.fetch(rpc_request(LIST_TOOLS, session_id=session_id))
+
+    assert listed.status == 200
+    assert session.last_seen > -1.0
+
+
+async def test_valid_get_refreshes_idle_timestamp(mount):
+    session_id = await handshake(mount)
+    session = mount.store.peek(session_id)
+    assert session is not None
+    session.last_seen = -1.0
+
+    stream = await mount.fetch(rpc_request("", method="GET", session_id=session_id))
+
+    assert stream.status == 200
+    assert session.last_seen > -1.0
+
+
+async def test_store_peek_preserves_get_touch_compatibility(mount):
+    session_id = await handshake(mount)
+    session = mount.store.peek(session_id)
+    assert session is not None
+    session.last_seen = -1.0
+
+    assert mount.store.peek(session_id) is session
+    assert session.last_seen == -1.0
+    assert mount.store.get(session_id) is session
+    assert session.last_seen > -1.0
+
+
+async def test_delete_does_not_refresh_before_removal():
+    class InspectingStore(MemorySessionStore):
+        removed_last_seen: float | None = None
+
+        async def remove(self, session_id: str) -> bool:
+            session = self.peek(session_id)
+            if session is not None:
+                self.removed_last_seen = session.last_seen
+            return await super().remove(session_id)
+
+    store = InspectingStore()
+    mount = McpMount(build_server(), store=store)
+    session_id = await handshake(mount)
+    session = store.peek(session_id)
+    assert session is not None
+    session.last_seen = -1.0
+
+    deleted = await mount.fetch(rpc_request("", method="DELETE", session_id=session_id))
+
+    assert deleted.status == 200
+    assert store.removed_last_seen == -1.0
 
 
 async def test_two_sessions_are_independent(mount):

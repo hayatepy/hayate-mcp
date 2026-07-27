@@ -3,7 +3,7 @@
 import pytest
 from hayate import Hayate
 
-from conftest import INITIALIZE, build_server, rpc_request
+from conftest import INITIALIZE, INITIALIZED, build_server, call_tool, rpc_request
 from hayate_mcp import Authorization, McpMount
 
 RESOURCE = "https://mcp.example.com"
@@ -228,6 +228,40 @@ async def test_tool_scope_is_enforced():
     )
     assert res.status == 403
     assert 'scope="documents:read"' in res.headers.get("www-authenticate")
+
+
+async def test_rejected_tool_scope_does_not_refresh_stateful_session():
+    mount = McpMount(
+        build_server(),
+        authorization=Authorization(
+            resource=RESOURCE,
+            authorization_servers=[AS],
+            verify_token=_verify,
+            scopes_supported=["mcp", "documents:read"],
+        ),
+        tool_scopes={"echo": ["documents:read"]},
+    )
+    headers = {"authorization": "Bearer good-token"}
+    try:
+        initialized = await mount.fetch(rpc_request(INITIALIZE, headers=headers))
+        session_id = initialized.headers.get("mcp-session-id")
+        assert session_id
+        accepted = await mount.fetch(
+            rpc_request(INITIALIZED, session_id=session_id, headers=headers)
+        )
+        assert accepted.status == 202
+
+        session = mount.store.peek(session_id)
+        assert session is not None
+        session.last_seen = -1.0
+        denied = await mount.fetch(
+            rpc_request(call_tool("secret"), session_id=session_id, headers=headers)
+        )
+
+        assert denied.status == 403
+        assert session.last_seen == -1.0
+    finally:
+        await mount.store.close_all()
 
 
 async def test_register_exposes_the_metadata_route():
