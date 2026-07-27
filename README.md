@@ -9,7 +9,7 @@ an official [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk)
 bridge for ASGI and a focused, Pydantic-free tools runtime for Cloudflare
 Python Workers, both over the same Streamable HTTP boundary.
 
-> **Status: alpha (0.10.x).** Tracks the latest stable revision —
+> **Status: alpha (0.x).** Tracks the latest stable revision —
 > **MCP 2025-11-25 on both CPython/ASGI and Cloudflare Python Workers**, with
 > `MCP-Protocol-Version` header validation.
 > Serves MCP Inspector, Claude Code, and the official SDK client — single-JSON
