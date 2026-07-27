@@ -141,10 +141,19 @@ class MemorySessionStore:
         self._sessions: dict[str, McpSession] = {}
 
     def get(self, session_id: str) -> McpSession | None:
-        session = self._sessions.get(session_id)
+        """Return a session and record successful activity.
+
+        Transport code that still needs to validate the request must use
+        :meth:`peek` and call ``session.touch()`` only after validation.
+        """
+        session = self.peek(session_id)
         if session is not None:
             session.touch()
         return session
+
+    def peek(self, session_id: str) -> McpSession | None:
+        """Return a session without changing its idle-expiry timestamp."""
+        return self._sessions.get(session_id)
 
     async def add(self, session: McpSession) -> None:
         await self._evict()

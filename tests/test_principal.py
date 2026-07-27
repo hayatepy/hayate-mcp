@@ -90,6 +90,9 @@ async def test_stateful_session_is_bound_to_creating_principal():
         )
         assert initialized.status == 202
 
+        session = mount.store.peek(session_id)
+        assert session is not None
+        session.last_seen = -1.0
         denied = await mount.fetch(
             rpc_request(
                 LIST_TOOLS,
@@ -98,6 +101,7 @@ async def test_stateful_session_is_bound_to_creating_principal():
             )
         )
         assert denied.status == 404
+        assert session.last_seen == -1.0
 
         allowed = await mount.fetch(
             rpc_request(
@@ -107,5 +111,6 @@ async def test_stateful_session_is_bound_to_creating_principal():
             )
         )
         assert allowed.status == 200
+        assert session.last_seen > -1.0
     finally:
         await mount.store.close_all()
