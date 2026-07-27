@@ -4,6 +4,8 @@ All notable changes to hayate-mcp are documented here.
 
 ## Unreleased
 
+## [0.11.1] - 2026-07-27
+
 ### Fixed
 
 - Bind every stateful ASGI session to the protocol version returned by its
