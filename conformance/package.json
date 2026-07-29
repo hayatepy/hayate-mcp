@@ -5,7 +5,7 @@
     "node": ">=20"
   },
   "dependencies": {
-    "@modelcontextprotocol/conformance": "0.1.16"
+    "@modelcontextprotocol/conformance": "0.2.0-alpha.10"
   },
   "overrides": {
     "@hono/node-server": "2.0.11"

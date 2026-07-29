@@ -35,7 +35,7 @@ test -n "${wheel_path}"
 cp "${repo_dir}/examples/workers/entry.py" "${test_dir}/entry.py"
 cp "${repo_dir}/examples/workers/wrangler.toml" "${test_dir}/wrangler.toml"
 sed \
-  's|, "hayate-mcp>=0.10.1"||' \
+  's|, "hayate-mcp>=[^"]*"||' \
   "${repo_dir}/examples/workers/pyproject.toml" >"${test_dir}/pyproject.toml"
 mkdir -p "${node_shim_dir}"
 ln -s "${repo_dir}/scripts/node_pyodide_compat.sh" "${node_shim_dir}/node"

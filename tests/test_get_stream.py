@@ -3,7 +3,7 @@
 import asyncio
 
 from mcp.shared.message import SessionMessage
-from mcp.types import JSONRPCMessage
+from mcp.types import jsonrpc_message_adapter
 
 from conftest import handshake, rpc_request
 
@@ -22,7 +22,7 @@ async def test_stream_delivers_server_initiated_messages(mount):
 
     session = mount.store.get(session_id)
     await session._from_server_send.send(
-        SessionMessage(message=JSONRPCMessage.model_validate(NOTIFICATION))
+        SessionMessage(message=jsonrpc_message_adapter.validate_python(NOTIFICATION))
     )
     for _ in range(3):  # let the reader task move the message to the queue
         await asyncio.sleep(0)

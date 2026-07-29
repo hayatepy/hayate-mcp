@@ -1,38 +1,61 @@
-"""McpMount: the Streamable HTTP transport as a pure fetch handler.
+"""Dual-era MCP Streamable HTTP transport as a pure hayate fetch handler.
 
-Spec: modelcontextprotocol.io, Streamable HTTP transport, tracking the SDK's
-latest revision (2025-11-25 with mcp>=1.28 on CPython). POST carries JSON-RPC
-and replies with a single JSON body; GET opens the optional server-initiated
-SSE stream (one per session); DELETE terminates a session. The
-Each stateful session binds the version selected by its successful
-``initialize`` response, then validates ``MCP-Protocol-Version`` against that
-exact revision (mismatch -> 400). Stateless requests validate against the
-SDK's globally supported revisions. Resumability (Last-Event-ID) is out until
-it can live in the Durable Object store (DESIGN §4).
+The 2026-07-28 path is self-contained and stateless regardless of the legacy
+session policy: every POST carries its protocol/client envelope, routing
+headers are cross-checked against the body, and no ``Mcp-Session-Id`` is
+issued.  Earlier revisions keep their initialize/session/GET/DELETE lifecycle
+so deployed clients are not stranded during the transition.
 """
 
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from typing import Any
 
 from hayate import Context, Request, Response, problem
 from hayate.sse import event_stream as sse_stream
-from mcp.shared.version import SUPPORTED_PROTOCOL_VERSIONS
-from mcp.types import JSONRPCError, JSONRPCMessage, JSONRPCRequest, JSONRPCResponse
+from mcp.types import (
+    JSONRPCError,
+    JSONRPCMessage,
+    JSONRPCNotification,
+    JSONRPCRequest,
+    JSONRPCResponse,
+    jsonrpc_message_adapter,
+)
+from mcp.types.version import HANDSHAKE_PROTOCOL_VERSIONS
 from pydantic import ValidationError
 
 from .authorization import Authorization
-from .context import request_context
+from .context import get_request_context, request_context
 from .origin import origin_allowed
 from .principal import Principal, principal_context, principal_identity
+from .protocol import (
+    ERROR_CODE_HTTP_STATUS,
+    HEADER_MISMATCH,
+    INVALID_REQUEST,
+    MCP_PARAM_HEADER_PREFIX,
+    MCP_PROTOCOL_VERSION_HEADER,
+    METHOD_NOT_FOUND,
+    MODERN_PROTOCOL_VERSIONS,
+    MODERN_REMOVED_METHODS,
+    PARSE_ERROR,
+    ProtocolRejection,
+    classify_modern_request,
+    find_duplicated_routing_header,
+    lower_headers,
+    require_client_capabilities,
+    should_route_modern,
+    validate_mcp_param_headers,
+)
 from .session import McpSession, MemorySessionStore
 
 SESSION_HEADER = "mcp-session-id"
-PROTOCOL_VERSION_HEADER = "mcp-protocol-version"
+PROTOCOL_VERSION_HEADER = MCP_PROTOCOL_VERSION_HEADER
 CONTENT_TYPE_JSON = "application/json"
 CONTENT_TYPE_SSE = "text/event-stream"
+_MCP_PARAM_LIST_PAGE_CAP = 100
+_SSE_PING_INTERVAL = 15.0
 
 
 class McpMount:
@@ -48,6 +71,7 @@ class McpMount:
         stateless: bool = False,
         authorization: Authorization | None = None,
         tool_scopes: Mapping[str, Sequence[str]] | None = None,
+        tool_capabilities: Mapping[str, Mapping[str, Any]] | None = None,
     ) -> None:
         if not path.startswith("/"):
             raise ValueError("path must start with '/'")
@@ -64,10 +88,9 @@ class McpMount:
         # identity is the DO's name: pin it so ``initialize`` returns that id
         # and every later request routes back to the same object (DESIGN §4).
         self.session_id = session_id
-        # Stateless mode (DESIGN §6.1): every request runs the SDK Server to
-        # completion on its own — no persistent session, no long-lived task.
-        # This is the mode that runs on Cloudflare Workers, where a bounded
-        # request cannot host a detached ``server.run`` (research/workers-do.md).
+        # This flag controls only the compatibility-era lifecycle. Modern
+        # calls are always sessionless; a subscriptions/listen handler may
+        # still own a live response stream until that response closes.
         self.stateless = stateless
         # OAuth 2.0 Resource Server config (DESIGN §5): when set, MCP requests
         # require a valid Bearer token and the RFC 9728 metadata is served.
@@ -75,6 +98,18 @@ class McpMount:
         self.tool_scopes = {
             name: tuple(dict.fromkeys(scopes)) for name, scopes in (tool_scopes or {}).items()
         }
+        if tool_capabilities is not None and any(
+            not isinstance(name, str) or not isinstance(required, Mapping)
+            for name, required in tool_capabilities.items()
+        ):
+            raise TypeError("tool_capabilities must map tool names to capability objects")
+        self.tool_capabilities = {
+            name: dict(required) for name, required in (tool_capabilities or {}).items()
+        }
+        try:
+            json.dumps(self.tool_capabilities, allow_nan=False)
+        except (TypeError, ValueError) as exc:
+            raise TypeError("tool_capabilities must be JSON serializable") from exc
 
     # -- the core ----------------------------------------------------------------------
 
@@ -91,6 +126,14 @@ class McpMount:
 
         if not self._origin_allowed(raw):
             return problem(403, title="Origin not allowed")
+
+        declared_version = raw.headers.get(PROTOCOL_VERSION_HEADER)
+        if (
+            raw.method in ("GET", "DELETE")
+            and declared_version is not None
+            and declared_version not in HANDSHAKE_PROTOCOL_VERSIONS
+        ):
+            return problem(405, title="Method Not Allowed", headers={"allow": "POST"})
 
         # A stateless request has no session whose negotiated revision can be
         # consulted. Stateful GET/DELETE are checked only after resolving the
@@ -128,7 +171,7 @@ class McpMount:
         A missing header passes (the transports spec says assume 2025-03-26
         for back-compat); a present-but-unsupported value must 400."""
         version = raw.headers.get(PROTOCOL_VERSION_HEADER)
-        return version is None or version in SUPPORTED_PROTOCOL_VERSIONS
+        return version is None or version in HANDSHAKE_PROTOCOL_VERSIONS
 
     @staticmethod
     def _session_protocol_version_ok(raw: Request, session: McpSession) -> bool:
@@ -158,22 +201,94 @@ class McpMount:
                 title="Unsupported Media Type",
                 detail="MCP POST requests must use application/json",
             )
+        transport_headers = lower_headers(raw.headers)
+        modern_header = (
+            transport_headers.get(MCP_PROTOCOL_VERSION_HEADER) is not None
+            and transport_headers[MCP_PROTOCOL_VERSION_HEADER] not in HANDSHAKE_PROTOCOL_VERSIONS
+        )
         try:
             body = json.loads(
                 (await raw.bytes()).decode("utf-8"),
                 parse_constant=_reject_json_constant,
             )
         except (UnicodeDecodeError, ValueError):
+            if modern_header:
+                return self._protocol_rejection(
+                    None,
+                    ProtocolRejection(PARSE_ERROR, "Parse error"),
+                )
             return problem(400, title="Body must be UTF-8 JSON")
+        modern = should_route_modern(body, transport_headers)
         try:
-            message = JSONRPCMessage.model_validate(body)
+            message = jsonrpc_message_adapter.validate_python(body)
         except ValidationError:
             # 2025-06-18 dropped JSON-RPC batching, so an array is invalid too.
+            if modern:
+                return self._protocol_rejection(
+                    None,
+                    ProtocolRejection(
+                        INVALID_REQUEST,
+                        "Body must be a single JSON-RPC request object",
+                    ),
+                )
             return problem(400, title="Body must be a single JSON-RPC message")
 
-        is_initialize = (
-            isinstance(message.root, JSONRPCRequest) and message.root.method == "initialize"
-        )
+        if modern:
+            if not isinstance(message, JSONRPCRequest) or not isinstance(body, dict):
+                return self._protocol_rejection(
+                    None,
+                    ProtocolRejection(
+                        INVALID_REQUEST,
+                        "Body must be a single JSON-RPC request object",
+                    ),
+                )
+            duplicated = find_duplicated_routing_header(raw.headers.raw())
+            if duplicated is not None:
+                return self._protocol_rejection(
+                    message.id,
+                    ProtocolRejection(
+                        HEADER_MISMATCH,
+                        f"{duplicated} header appears more than once",
+                    ),
+                )
+            route = classify_modern_request(
+                body,
+                transport_headers,
+                supported_versions=MODERN_PROTOCOL_VERSIONS,
+            )
+            if isinstance(route, ProtocolRejection):
+                return self._protocol_rejection(message.id, route)
+            if message.method in MODERN_REMOVED_METHODS:
+                return self._protocol_rejection(
+                    message.id,
+                    ProtocolRejection(METHOD_NOT_FOUND, "Method not found"),
+                )
+            capability_rejection = self._modern_capability_rejection(
+                message,
+                route.client_capabilities,
+            )
+            if capability_rejection is not None:
+                return self._protocol_rejection(message.id, capability_rejection)
+            if self.authorization is not None:
+                assert principal is not None
+                required = self._required_tool_scopes(message)
+                missing = self.authorization.missing_scopes(principal, required)
+                if missing:
+                    return self._insufficient_scope(list(required))
+            param_rejection = await self._modern_param_rejection(
+                message,
+                transport_headers,
+                raw.headers.raw(),
+            )
+            if param_rejection is not None:
+                return self._protocol_rejection(message.id, param_rejection)
+            if message.method == "subscriptions/listen" and self._serves_method(
+                "subscriptions/listen"
+            ):
+                return self._post_modern_stream(message, principal)
+            return await self._post_stateless(message, modern=True)
+
+        is_initialize = isinstance(message, JSONRPCRequest) and message.method == "initialize"
         # initialize has no negotiated version yet. A stateless request can
         # only be checked against the SDK's supported set; a stateful request
         # is checked against its exact session version after session lookup.
@@ -212,12 +327,16 @@ class McpMount:
                 return self._insufficient_scope(list(required))
 
         if self.stateless:
-            return await self._post_stateless(message)
+            return await self._post_stateless(
+                message,
+                modern=False,
+                legacy_version=raw.headers.get(PROTOCOL_VERSION_HEADER),
+            )
         assert session is not None
         if not is_initialize:
             session.touch()
 
-        if isinstance(message.root, JSONRPCRequest):
+        if isinstance(message, JSONRPCRequest):
             try:
                 reply = await session.request(message)
             except BaseException:
@@ -226,9 +345,8 @@ class McpMount:
                 raise
             headers = {"content-type": "application/json"}
             if is_initialize:
-                root = reply.root
-                if isinstance(root, JSONRPCResponse):
-                    version = root.result.get("protocolVersion")
+                if isinstance(reply, JSONRPCResponse):
+                    version = reply.result.get("protocolVersion")
                     if not isinstance(version, str) or not version:
                         await self.store.remove(session.id)
                         return problem(
@@ -251,49 +369,293 @@ class McpMount:
         await session.send_notification(message)
         return Response(None, status=202)
 
-    async def _post_stateless(self, message: JSONRPCMessage) -> Response:
+    async def _post_stateless(
+        self,
+        message: JSONRPCMessage,
+        *,
+        modern: bool,
+        legacy_version: str | None = None,
+    ) -> Response:
         """Run the SDK Server to completion for this one message.
 
-        A fresh stateless ``ServerSession`` treats itself as already
-        initialized, so any request — including ``initialize`` — is handled
-        without a persistent session. ``server.run`` returns as soon as the
-        request stream closes, so there is no detached task: the whole thing
-        fits inside a single bounded request (Workers-safe)."""
+        Modern requests are born self-contained.  A pre-2026 stateless call
+        that skipped initialize is bootstrapped inside the bounded exchange
+        for compatibility with hayate-mcp's established stateless contract.
+        """
+        if not isinstance(message, JSONRPCRequest):
+            return Response(None, status=202)
+        outbound: list[JSONRPCMessage] = []
+        reply = await self._exchange(
+            message,
+            bootstrap_legacy=not modern and message.method != "initialize",
+            legacy_version=legacy_version,
+            outbound=outbound,
+        )
+        if reply is None:  # pragma: no cover - server produced no response
+            return problem(500, title="No response from MCP server")
+        status = 200
+        if modern and isinstance(reply, JSONRPCError):
+            status = ERROR_CODE_HTTP_STATUS.get(reply.error.code, 200)
+        if modern and any(item is not reply for item in outbound):
+            return Response(
+                "".join(
+                    f"event: message\ndata: "
+                    f"{item.model_dump_json(by_alias=True, exclude_none=True)}\n\n"
+                    for item in outbound
+                ),
+                status=status,
+                headers={
+                    "content-type": CONTENT_TYPE_SSE,
+                    "cache-control": "no-cache, no-transform",
+                    "connection": "keep-alive",
+                    "x-accel-buffering": "no",
+                },
+            )
+        return Response(
+            reply.model_dump_json(by_alias=True, exclude_none=True),
+            status=status,
+            headers={"content-type": "application/json"},
+        )
+
+    async def _exchange(
+        self,
+        message: JSONRPCRequest,
+        *,
+        bootstrap_legacy: bool = False,
+        legacy_version: str | None = None,
+        outbound: list[JSONRPCMessage] | None = None,
+    ) -> JSONRPCResponse | JSONRPCError | None:
+        """Exchange one request with the SDK's public dual-era server loop."""
+
         import anyio
         from mcp.shared.message import SessionMessage
 
-        if not isinstance(message.root, JSONRPCRequest):
-            # Stateless has nowhere to route a bare notification; accept it.
-            return Response(None, status=202)
+        to_server_send, to_server_recv = anyio.create_memory_object_stream[
+            SessionMessage | Exception
+        ](4)
+        from_server_send, from_server_recv = anyio.create_memory_object_stream[SessionMessage](16)
+
+        reply: JSONRPCResponse | JSONRPCError | None = None
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(self._run_server_once, to_server_recv, from_server_send)
+            if bootstrap_legacy:
+                selected_version = (
+                    legacy_version
+                    if legacy_version in HANDSHAKE_PROTOCOL_VERSIONS
+                    else HANDSHAKE_PROTOCOL_VERSIONS[-1]
+                )
+                initialize = JSONRPCRequest(
+                    jsonrpc="2.0",
+                    id="_hayate_stateless_initialize",
+                    method="initialize",
+                    params={
+                        "protocolVersion": selected_version,
+                        "capabilities": {},
+                        "clientInfo": {
+                            "name": "hayate-stateless-bridge",
+                            "version": "0.12.0",
+                        },
+                    },
+                )
+                await to_server_send.send(SessionMessage(message=initialize))
+                async for item in from_server_recv:
+                    candidate = item.message
+                    if (
+                        isinstance(candidate, JSONRPCResponse | JSONRPCError)
+                        and candidate.id == initialize.id
+                    ):
+                        break
+                await to_server_send.send(
+                    SessionMessage(
+                        message=JSONRPCNotification(
+                            jsonrpc="2.0",
+                            method="notifications/initialized",
+                        )
+                    )
+                )
+            await to_server_send.send(SessionMessage(message=message))
+            async for item in from_server_recv:
+                candidate = item.message
+                if outbound is not None:
+                    outbound.append(candidate)
+                if (
+                    isinstance(candidate, JSONRPCResponse | JSONRPCError)
+                    and candidate.id == message.id
+                ):
+                    reply = candidate
+                    break
+            await to_server_send.aclose()
+            tg.cancel_scope.cancel()
+        return reply
+
+    def _post_modern_stream(
+        self,
+        message: JSONRPCRequest,
+        principal: Principal | None,
+    ) -> Response:
+        """Return a response-owned live SSE exchange for subscriptions."""
+
+        return Response(
+            self._modern_stream_events(
+                message,
+                principal,
+                get_request_context(),
+            ),
+            status=200,
+            headers={
+                "content-type": CONTENT_TYPE_SSE,
+                "cache-control": "no-cache, no-transform",
+                "connection": "keep-alive",
+                "x-accel-buffering": "no",
+            },
+        )
+
+    async def _modern_stream_events(
+        self,
+        message: JSONRPCRequest,
+        principal: Principal | None,
+        context: Context | None,
+    ) -> AsyncIterator[bytes]:
+        """Drive one live SDK exchange for exactly as long as its response body."""
+
+        import anyio
+        from mcp.shared.message import SessionMessage
 
         to_server_send, to_server_recv = anyio.create_memory_object_stream[
             SessionMessage | Exception
         ](1)
-        from_server_send, from_server_recv = anyio.create_memory_object_stream[SessionMessage](8)
+        from_server_send, from_server_recv = anyio.create_memory_object_stream[SessionMessage](16)
 
-        reply: JSONRPCMessage | None = None
-        async with anyio.create_task_group() as tg:
-            tg.start_soon(self._run_server_once, to_server_recv, from_server_send)
-            await to_server_send.send(SessionMessage(message=message))
-            async for item in from_server_recv:
-                root = item.message.root
-                if isinstance(root, JSONRPCResponse | JSONRPCError) and root.id == message.root.id:
-                    reply = item.message
-                    break
+        try:
+            async with anyio.create_task_group() as tg:
+                try:
+                    # AnyIO copies the active context into the child task.
+                    # Reset immediately afterward so yielding response chunks
+                    # cannot leak request state into the adapter's send loop.
+                    if context is None:
+                        with principal_context(principal):
+                            tg.start_soon(
+                                self._run_server_once,
+                                to_server_recv,
+                                from_server_send,
+                            )
+                    else:
+                        with principal_context(principal), request_context(context):
+                            tg.start_soon(
+                                self._run_server_once,
+                                to_server_recv,
+                                from_server_send,
+                            )
+                    await to_server_send.send(SessionMessage(message=message))
+
+                    while True:
+                        item = None
+                        ended = False
+                        with anyio.move_on_after(_SSE_PING_INTERVAL) as timeout:
+                            try:
+                                item = await from_server_recv.receive()
+                            except anyio.EndOfStream:
+                                ended = True
+                        if timeout.cancel_called:
+                            yield b": ping\r\n\r\n"
+                            continue
+                        if ended:
+                            return
+                        assert item is not None
+                        candidate = item.message
+                        yield _sse_event(candidate)
+                        if (
+                            isinstance(candidate, JSONRPCResponse | JSONRPCError)
+                            and candidate.id == message.id
+                        ):
+                            return
+                except GeneratorExit:
+                    # Response-body close is the modern HTTP cancellation
+                    # signal. Consume it here so AnyIO does not wrap it in an
+                    # exception group while the server task is being stopped.
+                    return
+                finally:
+                    await to_server_send.aclose()
+                    if not tg.cancel_scope.cancel_called:
+                        tg.cancel_scope.cancel()
+        finally:
             await to_server_send.aclose()
+            await from_server_recv.aclose()
 
-        if reply is None:  # pragma: no cover - server produced no response
-            return problem(500, title="No response from MCP server")
-        return Response(
-            reply.model_dump_json(by_alias=True, exclude_none=True),
-            status=200,
-            headers={"content-type": "application/json"},
-        )
+    def _serves_method(self, method: str) -> bool:
+        getter = getattr(self.server, "get_request_handler", None)
+        return callable(getter) and getter(method) is not None
+
+    async def _modern_param_rejection(
+        self,
+        message: JSONRPCRequest,
+        headers: Mapping[str, str],
+        raw_headers: Sequence[tuple[str, str]],
+    ) -> ProtocolRejection | None:
+        """Resolve the caller-visible tool schema and validate routed params."""
+
+        if message.method != "tools/call" or not isinstance(message.params, dict):
+            return None
+        name = message.params.get("name")
+        arguments = message.params.get("arguments", {})
+        meta = message.params.get("_meta")
+        if (
+            not isinstance(name, str)
+            or not isinstance(arguments, dict)
+            or not isinstance(meta, dict)
+        ):
+            return None
+        if not arguments and not any(
+            header.lower().startswith(MCP_PARAM_HEADER_PREFIX.lower())
+            for header, _value in raw_headers
+        ):
+            return None
+
+        seen_cursors: set[str] = set()
+        list_params: dict[str, Any] = {"_meta": meta}
+        for page in range(_MCP_PARAM_LIST_PAGE_CAP):
+            listing = JSONRPCRequest(
+                jsonrpc="2.0",
+                id=f"_hayate_schema_{message.id}_{page}",
+                method="tools/list",
+                params=list_params,
+            )
+            reply = await self._exchange(listing)
+            if not isinstance(reply, JSONRPCResponse):
+                return None
+            tools = reply.result.get("tools")
+            if not isinstance(tools, list):
+                return None
+            for tool in tools:
+                if isinstance(tool, dict) and tool.get("name") == name:
+                    return validate_mcp_param_headers(
+                        tool.get("inputSchema"),
+                        arguments,
+                        headers,
+                        raw_headers=raw_headers,
+                    )
+            cursor = reply.result.get("nextCursor")
+            if not isinstance(cursor, str) or cursor in seen_cursors:
+                return None
+            seen_cursors.add(cursor)
+            list_params = {"_meta": meta, "cursor": cursor}
+        return None
+
+    def _modern_capability_rejection(
+        self,
+        message: JSONRPCRequest,
+        declared: Any,
+    ) -> ProtocolRejection | None:
+        if message.method != "tools/call" or not isinstance(message.params, dict):
+            return None
+        name = message.params.get("name")
+        if not isinstance(name, str):
+            return None
+        required = self.tool_capabilities.get(name)
+        return require_client_capabilities(declared, required) if required is not None else None
 
     async def _run_server_once(self, read_stream: Any, write_stream: Any) -> None:
-        await self.server.run(
-            read_stream, write_stream, self.initialization_options, stateless=True
-        )
+        await self.server.run(read_stream, write_stream, self.initialization_options)
 
     def _get(self, raw: Request, principal: Principal | None) -> Response:
         """The optional server-initiated SSE stream (one per session).
@@ -327,7 +689,12 @@ class McpMount:
         return Response(
             sse_stream(session.outbound_events()),
             status=200,
-            headers={"content-type": "text/event-stream", "cache-control": "no-cache"},
+            headers={
+                "content-type": "text/event-stream",
+                "cache-control": "no-cache, no-transform",
+                "connection": "keep-alive",
+                "x-accel-buffering": "no",
+            },
         )
 
     async def _delete(self, raw: Request, principal: Principal | None) -> Response:
@@ -395,14 +762,36 @@ class McpMount:
         return all(media_type in accepted for media_type in required)
 
     def _required_tool_scopes(self, message: JSONRPCMessage) -> tuple[str, ...]:
-        root = message.root
-        if not isinstance(root, JSONRPCRequest) or root.method != "tools/call":
+        if not isinstance(message, JSONRPCRequest) or message.method != "tools/call":
             return ()
-        params = root.params
+        params = message.params
         if not isinstance(params, dict):
             return ()
         name = params.get("name")
         return self.tool_scopes.get(name, ()) if isinstance(name, str) else ()
+
+    @staticmethod
+    def _protocol_rejection(
+        request_id: str | int | None,
+        rejection: ProtocolRejection,
+    ) -> Response:
+        error: dict[str, Any] = {
+            "code": rejection.code,
+            "message": rejection.message,
+        }
+        if rejection.data is not None:
+            error["data"] = rejection.data
+        return Response(
+            _json_dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "error": error,
+                }
+            ),
+            status=rejection.http_status,
+            headers={"content-type": CONTENT_TYPE_JSON},
+        )
 
     def _unauthorized(self, *, error: str | None = None) -> Response:
         authorization = self.authorization
@@ -445,7 +834,12 @@ class McpMount:
 
 
 def _json_dumps(data: Any) -> str:
-    return json.dumps(data, separators=(",", ":"))
+    return json.dumps(data, separators=(",", ":"), allow_nan=False)
+
+
+def _sse_event(message: JSONRPCMessage) -> bytes:
+    data = message.model_dump_json(by_alias=True, exclude_none=True)
+    return f"event: message\r\ndata: {data}\r\n\r\n".encode()
 
 
 def _reject_json_constant(value: str) -> Any:

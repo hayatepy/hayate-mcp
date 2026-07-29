@@ -31,27 +31,38 @@ def call_tool(text: str, request_id: int = 3) -> dict:
 
 
 def build_server() -> Server:
-    server = Server("test-tools")
+    async def list_tools(_ctx, _params) -> types.ListToolsResult:
+        return types.ListToolsResult(
+            tools=[
+                types.Tool(
+                    name="echo",
+                    description="Echo the input back.",
+                    input_schema={
+                        "type": "object",
+                        "properties": {"text": {"type": "string"}},
+                        "required": ["text"],
+                    },
+                )
+            ]
+        )
 
-    @server.list_tools()
-    async def list_tools() -> list[types.Tool]:
-        return [
-            types.Tool(
-                name="echo",
-                description="Echo the input back.",
-                inputSchema={
-                    "type": "object",
-                    "properties": {"text": {"type": "string"}},
-                    "required": ["text"],
-                },
-            )
-        ]
+    async def handle_call(_ctx, params: types.CallToolRequestParams) -> types.CallToolResult:
+        arguments = params.arguments or {}
+        return types.CallToolResult(
+            content=[
+                types.TextContent(
+                    type="text",
+                    text=f"echo: {arguments['text']}",
+                )
+            ]
+        )
 
-    @server.call_tool()
-    async def handle_call(name: str, arguments: dict) -> list[types.TextContent]:
-        return [types.TextContent(type="text", text=f"echo: {arguments['text']}")]
-
-    return server
+    return Server(
+        "test-tools",
+        version="0.12.0",
+        on_list_tools=list_tools,
+        on_call_tool=handle_call,
+    )
 
 
 @pytest.fixture

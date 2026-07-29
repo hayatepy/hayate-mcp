@@ -3,6 +3,13 @@
 > 2026-07-22 実施。spike コードは `spike/sdk-workers/`(使い捨て、entry.py)。
 > 以下は当時の実測記録。2026-07-24 の v0.8 判断で結論を更新した。
 
+## 2026-07-30 更新
+
+Workers-native runtimeはMCP 2026-07-28のhandshake-free discovery/toolsと
+2025-11-25 compatibilityを同じendpointで処理する。公式SDK自体は引き続き
+Workers bundleへ入れず、CPython側はSDK 2.xへ更新した。workerd E2EもSDK 2.x
+clientで検証する。以下の1.28.1/2025記述はv0.8判断時の履歴である。
+
 ## 2026-07-24 更新
 
 SDK 1.12.4 自体は動作したが、MCP 2025-11-25 対応の SDK 1.28.1 は

@@ -4,6 +4,50 @@ All notable changes to hayate-mcp are documented here.
 
 ## Unreleased
 
+## [0.12.0] - 2026-07-30
+
+### Added
+
+- Add a shared, SDK-independent MCP 2026-07-28 protocol layer for both ASGI
+  and Cloudflare Workers, while retaining the 2025-11-25 lifecycle for
+  existing clients on the same endpoint.
+- Add handshake-free `server/discover`, mandatory per-request metadata,
+  standard routing headers, `x-mcp-header` parameter validation and Base64
+  decoding, `resultType`, server identity metadata, and cache hints.
+- Add explicit client capability gates through
+  `McpMount(tool_capabilities=...)` and Workers tool
+  `required_capabilities=...`, returning `-32021` and HTTP 400 before handler
+  execution.
+- Add bounded POST SSE responses for modern progress notifications.
+- Add live `subscriptions/listen` response streams on ASGI with keepalives,
+  proxy-buffer suppression, response-owned cancellation, and official
+  acknowledgment/filter/subscription-ID behavior.
+- Add SDK 2.x MRTR coverage for elicitation, sampling, roots, prompts,
+  multiple inputs, repeated rounds, authenticated `requestState`, and tamper
+  rejection.
+- Add a migration guide and forward-looking protocol/extension strategy.
+
+### Changed
+
+- Upgrade the official MCP Python SDK dependency to `mcp>=2.0.0,<3`.
+- Make every 2026 request stateless even when the mount also serves stateful
+  legacy clients. Removed lifecycle methods now return `-32601` with HTTP 404.
+- Allow arbitrary JSON `structuredContent` and output schemas on the modern
+  Workers wire while preserving the narrower legacy shape.
+- Upgrade the pinned official conformance runner and gate 70 scenarios:
+  30 for 2025-11-25 and all 40 current 2026-07-28 core scenarios.
+  The modern stateless scenario exercises live subscription acknowledgment,
+  filtering, IDs, and list-change delivery rather than taking its
+  capability-absent path.
+
+### Security
+
+- Reject mismatched or missing MCP routing headers with `-32020`, unsupported
+  revisions with `-32022`, and undeclared required client capabilities with
+  `-32021`, using the specified HTTP status mapping.
+- Exercise SDK request-state encryption, expiry, request/audience binding,
+  and integrity failure in the official conformance fixture.
+
 ## [0.11.1] - 2026-07-27
 
 ### Fixed
