@@ -46,7 +46,7 @@ for attempt in {1..100}; do
   sleep 0.1
 done
 
-scenarios=(
+legacy_scenarios=(
   server-initialize
   logging-set-level
   ping
@@ -79,13 +79,13 @@ scenarios=(
   dns-rebinding-protection
 )
 
-# conformance 0.1.16's server-sse-multiple-streams scenario negotiates
+# conformance 0.2.0-alpha.10's legacy server-sse-multiple-streams scenario negotiates
 # 2025-11-25, then hard-codes 2025-03-26 on its raw follow-up POSTs. A
 # session-correct server must reject those requests. Keep the equivalent
 # three-request concurrency coverage in
 # tests/test_protocol_version.py::test_concurrent_posts_use_the_sessions_negotiated_version
 # until https://github.com/modelcontextprotocol/conformance/issues/412 ships.
-for scenario in "${scenarios[@]}"; do
+for scenario in "${legacy_scenarios[@]}"; do
   "${conformance}" server \
     --url "${server_url}" \
     --scenario "${scenario}" \
@@ -93,4 +93,60 @@ for scenario in "${scenarios[@]}"; do
     --output-dir "${result_dir}"
 done
 
-echo "Official MCP conformance scenarios passed: ${#scenarios[@]}/${#scenarios[@]}"
+modern_scenarios=(
+  server-stateless
+  completion-complete
+  tools-list
+  tools-call-simple-text
+  tools-call-image
+  tools-call-audio
+  tools-call-embedded-resource
+  tools-call-mixed-content
+  tools-call-error
+  tools-call-with-progress
+  json-schema-2020-12
+  server-sse-multiple-streams
+  resources-list
+  resources-read-text
+  resources-read-binary
+  resources-templates-read
+  sep-2164-resource-not-found
+  prompts-list
+  prompts-get-simple
+  prompts-get-with-args
+  prompts-get-embedded-resource
+  prompts-get-with-image
+  dns-rebinding-protection
+  caching
+  http-header-validation
+  http-custom-header-server-validation
+  input-required-result-basic-elicitation
+  input-required-result-basic-sampling
+  input-required-result-basic-list-roots
+  input-required-result-request-state
+  input-required-result-multiple-input-requests
+  input-required-result-multi-round
+  input-required-result-missing-input-response
+  input-required-result-non-tool-request
+  input-required-result-result-type
+  input-required-result-unsupported-methods
+  input-required-result-tampered-state
+  input-required-result-capability-check
+  input-required-result-ignore-extra-params
+  input-required-result-validate-input
+)
+
+# Pin every 2026 core scenario explicitly. The alpha conformance CLI's
+# "active" suite still selects only the pre-2026 subset, while "all" also
+# includes optional Tasks extension scenarios that this fixture does not
+# advertise.
+for scenario in "${modern_scenarios[@]}"; do
+  "${conformance}" server \
+    --url "${server_url}" \
+    --scenario "${scenario}" \
+    --spec-version 2026-07-28 \
+    --output-dir "${result_dir}"
+done
+
+total=$((${#legacy_scenarios[@]} + ${#modern_scenarios[@]}))
+echo "Official MCP conformance scenarios passed: ${total}/${total}"

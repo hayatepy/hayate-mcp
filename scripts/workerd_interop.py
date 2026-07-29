@@ -5,24 +5,19 @@ from __future__ import annotations
 import asyncio
 import sys
 
-from mcp import ClientSession
-from mcp.client.streamable_http import streamable_http_client
+from mcp import Client
 
 
 async def check(endpoint: str) -> None:
-    async with (
-        streamable_http_client(endpoint) as (read, write, get_session_id),
-        ClientSession(read, write) as session,
-    ):
-        initialized = await session.initialize()
-        assert initialized.protocolVersion == "2025-11-25"
-        assert initialized.serverInfo.name == "hayate-echo-workers"
-        assert get_session_id() is None
+    async with Client(endpoint) as client:
+        assert client.protocol_version == "2026-07-28"
+        assert client.server_info is not None
+        assert client.server_info.name == "hayate-echo-workers"
 
-        tools = await session.list_tools()
+        tools = await client.list_tools()
         assert [tool.name for tool in tools.tools] == ["echo"]
 
-        result = await session.call_tool("echo", {"text": "official-sdk-to-workerd"})
+        result = await client.call_tool("echo", {"text": "official-sdk-to-workerd"})
         assert result.content[0].text == "echo: official-sdk-to-workerd"
 
 

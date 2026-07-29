@@ -1,8 +1,8 @@
 """MCP Authorization: the OAuth 2.0 Resource Server side (DESIGN §5, v0.4).
 
-Normative: MCP Authorization (2025-11-25) + RFC 9728 (OAuth 2.0 Protected
-Resource Metadata) + RFC 6750 (Bearer). RFC 9449 DPoP is available as an
-opt-in extension. An authorized MCP server:
+Normative: MCP Authorization (2026-07-28 and 2025-11-25) + RFC 9728
+(OAuth 2.0 Protected Resource Metadata) + RFC 6750 (Bearer). RFC 9449 DPoP
+is available as an opt-in extension. An authorized MCP server:
 
 - serves its Protected Resource Metadata at the RFC 9728 §3.1 well-known
   URI (``/.well-known/oauth-protected-resource`` with the resource's path
@@ -14,7 +14,10 @@ opt-in extension. An authorized MCP server:
 Token *verification* is injected. Stable Bearer clients use
 ``verify_token(token) -> claims | None``. Sender-constrained deployments use
 ``verify_request(request) -> claims | None`` so the verifier can bind an
-RFC 9449 proof to the method, URI, access token, key, and replay store.
+RFC 9449 proof to the method, URI, access token, key, and replay store. The
+injected verifier is also responsible for issuer, expiry, signature, and
+resource/audience validation; returning claims asserts all of those checks
+have passed.
 """
 
 from __future__ import annotations

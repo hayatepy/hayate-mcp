@@ -12,8 +12,7 @@ import time
 from pathlib import Path
 
 import pytest
-from mcp import ClientSession
-from mcp.client.streamable_http import streamable_http_client
+from mcp import Client
 
 ROOT = Path(__file__).resolve().parent.parent
 PORT = 8930
@@ -46,16 +45,13 @@ def endpoint():
 
 
 async def test_official_client_full_round_trip(endpoint):
-    async with (
-        streamable_http_client(endpoint) as (read, write, get_session_id),
-        ClientSession(read, write) as session,
-    ):
-        result = await session.initialize()
-        assert result.serverInfo.name == "hayate-echo"
-        assert get_session_id()
+    async with Client(endpoint) as client:
+        assert client.protocol_version == "2026-07-28"
+        assert client.server_info is not None
+        assert client.server_info.name == "hayate-echo"
 
-        tools = await session.list_tools()
+        tools = await client.list_tools()
         assert [tool.name for tool in tools.tools] == ["echo"]
 
-        outcome = await session.call_tool("echo", {"text": "over the wire"})
+        outcome = await client.call_tool("echo", {"text": "over the wire"})
         assert outcome.content[0].text == "echo: over the wire"

@@ -5,6 +5,8 @@
 > Inspector CLI 実測)。本ログは「DO でステートフルを持つ将来案」がなぜ現状ブロックされるかの
 > 記録として残す。DO スキャフォールド `hayate_mcp.workers` は未達のため削除済み。
 > 本体 research §5 と同じ規律: 実機で緑になっていないものはチェックしない。
+> **2026-07-30追記**: 現行Workers pathは`WorkerMcpServer` /
+> `WorkerMcpMount`でMCP 2026-07-28をstateless処理する。DO不要という結論は維持。
 
 ## 現状(2026-07-23)
 

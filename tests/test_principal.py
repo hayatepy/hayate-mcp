@@ -20,28 +20,33 @@ async def verify(token: str):
 
 
 def principal_server() -> Server:
-    server = Server("principal")
+    async def list_tools(_ctx, _params) -> types.ListToolsResult:
+        return types.ListToolsResult(
+            tools=[
+                types.Tool(
+                    name="whoami",
+                    input_schema={"type": "object", "properties": {}},
+                )
+            ]
+        )
 
-    @server.list_tools()
-    async def list_tools() -> list[types.Tool]:
-        return [
-            types.Tool(
-                name="whoami",
-                inputSchema={"type": "object", "properties": {}},
-            )
-        ]
-
-    @server.call_tool()
-    async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
+    async def call_tool(_ctx, _params) -> types.CallToolResult:
         principal = get_principal()
-        return [
-            types.TextContent(
-                type="text",
-                text=f"{principal['subject']}:{' '.join(principal['scopes'])}",
-            )
-        ]
+        return types.CallToolResult(
+            content=[
+                types.TextContent(
+                    type="text",
+                    text=f"{principal['subject']}:{' '.join(principal['scopes'])}",
+                )
+            ]
+        )
 
-    return server
+    return Server(
+        "principal",
+        version="0.12.0",
+        on_list_tools=list_tools,
+        on_call_tool=call_tool,
+    )
 
 
 def authorized_mount(*, stateless: bool) -> McpMount:

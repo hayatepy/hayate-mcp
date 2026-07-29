@@ -36,28 +36,35 @@ async def _call_tool(app: Hayate, marker: str) -> dict:
 
 
 async def test_sdk_tool_receives_isolated_request_context() -> None:
-    server = Server("context-tools")
+    async def list_tools(_ctx, _params) -> types.ListToolsResult:
+        return types.ListToolsResult(
+            tools=[
+                types.Tool(
+                    name="request_marker",
+                    input_schema={"type": "object", "additionalProperties": False},
+                )
+            ]
+        )
 
-    @server.list_tools()
-    async def list_tools() -> list[types.Tool]:
-        return [
-            types.Tool(
-                name="request_marker",
-                inputSchema={"type": "object", "additionalProperties": False},
-            )
-        ]
-
-    @server.call_tool()
-    async def call_tool(_name: str, _arguments: dict) -> list[types.TextContent]:
+    async def call_tool(_ctx, _params) -> types.CallToolResult:
         await asyncio.sleep(0)
         context = get_request_context()
         assert context is not None
-        return [
-            types.TextContent(
-                type="text",
-                text=context.req.header("x-request-marker") or "",
-            )
-        ]
+        return types.CallToolResult(
+            content=[
+                types.TextContent(
+                    type="text",
+                    text=context.req.header("x-request-marker") or "",
+                )
+            ]
+        )
+
+    server = Server(
+        "context-tools",
+        version="0.12.0",
+        on_list_tools=list_tools,
+        on_call_tool=call_tool,
+    )
 
     app = Hayate()
     McpMount(server, stateless=True).register(app)

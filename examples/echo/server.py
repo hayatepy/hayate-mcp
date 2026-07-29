@@ -1,4 +1,4 @@
-"""The v0.1 acceptance server: an MCP echo tool mounted on a hayate app.
+"""An MCP echo tool mounted on a Hayate app.
 
     uv run --project ../.. uvicorn server:app --port 8930
 
@@ -13,27 +13,41 @@ from mcp.server.lowlevel import Server
 
 from hayate_mcp import McpMount
 
-server = Server("hayate-echo")
+
+async def list_tools(_ctx, _params) -> types.ListToolsResult:
+    return types.ListToolsResult(
+        tools=[
+            types.Tool(
+                name="echo",
+                description="Echo the input back.",
+                input_schema={
+                    "type": "object",
+                    "properties": {"text": {"type": "string"}},
+                    "required": ["text"],
+                },
+            )
+        ]
+    )
 
 
-@server.list_tools()
-async def list_tools() -> list[types.Tool]:
-    return [
-        types.Tool(
-            name="echo",
-            description="Echo the input back.",
-            inputSchema={
-                "type": "object",
-                "properties": {"text": {"type": "string"}},
-                "required": ["text"],
-            },
-        )
-    ]
+async def call_tool(_ctx, params: types.CallToolRequestParams) -> types.CallToolResult:
+    arguments = params.arguments or {}
+    return types.CallToolResult(
+        content=[
+            types.TextContent(
+                type="text",
+                text=f"echo: {arguments['text']}",
+            )
+        ]
+    )
 
 
-@server.call_tool()
-async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
-    return [types.TextContent(type="text", text=f"echo: {arguments['text']}")]
+server = Server(
+    "hayate-echo",
+    version="0.12.0",
+    on_list_tools=list_tools,
+    on_call_tool=call_tool,
+)
 
 
 app = Hayate()

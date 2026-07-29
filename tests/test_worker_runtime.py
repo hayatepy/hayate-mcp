@@ -8,7 +8,7 @@ import pytest
 from hayate import Request
 from hypothesis import given, settings
 from hypothesis import strategies as st
-from mcp.types import JSONRPCMessage
+from mcp.types import jsonrpc_message_adapter
 
 from hayate_mcp import (
     Authorization,
@@ -127,7 +127,7 @@ async def test_initialize_negotiates_latest_and_advertises_only_tools(worker_mou
         },
         "instructions": "Call echo with text.",
     }
-    JSONRPCMessage.model_validate(body)
+    jsonrpc_message_adapter.validate_python(body)
 
     older = {
         **INITIALIZE,
@@ -141,7 +141,7 @@ async def test_initialize_negotiates_latest_and_advertises_only_tools(worker_mou
 async def test_tools_list_and_call_are_accepted_by_official_sdk_models(worker_mount):
     listed = await worker_mount.fetch(request({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}))
     body = await listed.json()
-    JSONRPCMessage.model_validate(body)
+    jsonrpc_message_adapter.validate_python(body)
     tool = body["result"]["tools"][0]
     assert tool["name"] == "echo"
     assert tool["title"] == "Echo"
@@ -160,7 +160,7 @@ async def test_tools_list_and_call_are_accepted_by_official_sdk_models(worker_mo
         )
     )
     call_body = await called.json()
-    JSONRPCMessage.model_validate(call_body)
+    jsonrpc_message_adapter.validate_python(call_body)
     assert call_body["result"] == {"content": [{"type": "text", "text": "echo: edge"}]}
 
 
@@ -286,7 +286,7 @@ async def test_arbitrary_json_never_escapes_the_transport_or_emits_invalid_json_
     response = await WorkerMcpMount(build_server()).fetch(request(payload))
     assert response.status in (200, 202, 400)
     if response.status == 200:
-        JSONRPCMessage.model_validate(await response.json())
+        jsonrpc_message_adapter.validate_python(await response.json())
     elif response.status == 202:
         assert await response.bytes() == b""
 
@@ -321,7 +321,8 @@ async def test_transport_media_origin_version_and_methods(worker_mount):
     initialize_exempt = await worker_mount.fetch(
         request(INITIALIZE, headers={"mcp-protocol-version": "2099-01-01"})
     )
-    assert initialize_exempt.status == 200
+    assert initialize_exempt.status == 400
+    assert (await initialize_exempt.json())["error"]["code"] == -32602
     initialize_without_header = await worker_mount.fetch(request(INITIALIZE, protocol_version=None))
     assert initialize_without_header.status == 200
     missing_version = await worker_mount.fetch(
@@ -516,7 +517,7 @@ async def test_all_2025_11_25_content_block_shapes_are_emitted(worker_mount):
         )
     )
     body = await response.json()
-    JSONRPCMessage.model_validate(body)
+    jsonrpc_message_adapter.validate_python(body)
     assert [item["type"] for item in body["result"]["content"]] == [
         "text",
         "image",

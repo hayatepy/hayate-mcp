@@ -1,9 +1,10 @@
-"""MCP 2025-11-25 tools runtime for Cloudflare Python Workers.
+"""Dual-era MCP tools runtime for Cloudflare Python Workers.
 
 The official Python SDK cannot currently resolve on Cloudflare's Pyodide
 runtime because its Pydantic floor needs a newer ``pydantic-core`` wasm
 wheel.  This module implements the deliberately small capability surface
-advertised by a stateless Workers server: lifecycle, ping, and tools.
+advertised by a stateless Workers server: legacy lifecycle and modern
+discovery, plus tools in both protocol eras.
 Optional capabilities (resources, prompts, logging, sampling, tasks, and
 server-initiated streams) are not advertised and therefore are not part of
 the negotiated contract.
@@ -29,9 +30,31 @@ from .authorization import Authorization
 from .context import request_context
 from .origin import origin_allowed
 from .principal import Principal, principal_context
+from .protocol import (
+    ERROR_CODE_HTTP_STATUS,
+    HEADER_MISMATCH,
+    INVALID_REQUEST,
+    LEGACY_PROTOCOL_VERSION,
+    LEGACY_PROTOCOL_VERSIONS,
+    MCP_PROTOCOL_VERSION_HEADER,
+    METHOD_NOT_FOUND,
+    MODERN_PROTOCOL_VERSION,
+    MODERN_PROTOCOL_VERSIONS,
+    MODERN_REMOVED_METHODS,
+    PARSE_ERROR,
+    SERVER_INFO_META_KEY,
+    ProtocolRejection,
+    classify_modern_request,
+    find_duplicated_routing_header,
+    find_invalid_x_mcp_header,
+    lower_headers,
+    require_client_capabilities,
+    should_route_modern,
+    validate_mcp_param_headers,
+)
 
-PROTOCOL_VERSION = "2025-11-25"
-PROTOCOL_VERSION_HEADER = "mcp-protocol-version"
+PROTOCOL_VERSION = MODERN_PROTOCOL_VERSION
+PROTOCOL_VERSION_HEADER = MCP_PROTOCOL_VERSION_HEADER
 CONTENT_TYPE_JSON = "application/json"
 CONTENT_TYPE_SSE = "text/event-stream"
 
@@ -113,7 +136,7 @@ class WorkerProtocolError(_ProtocolError):
 
 @dataclass(frozen=True)
 class WorkerTool:
-    """A 2025-11-25 ``Tool`` definition and its local handler."""
+    """A tool definition shared by the 2025 and 2026 protocol eras."""
 
     name: str
     handler: ToolHandler = field(repr=False, compare=False)
@@ -125,6 +148,10 @@ class WorkerTool:
     icons: tuple[dict[str, Any], ...] = ()
     meta: dict[str, Any] | None = None
     execution: dict[str, Any] | None = None
+    required_capabilities: dict[str, Any] | None = field(
+        default=None,
+        repr=False,
+    )
 
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or not _TOOL_NAME.fullmatch(self.name):
@@ -133,10 +160,11 @@ class WorkerTool:
             )
         if not isinstance(self.input_schema, dict) or self.input_schema.get("type") != "object":
             raise ValueError("tool input_schema must have type='object'")
-        if self.output_schema is not None and (
-            not isinstance(self.output_schema, dict) or self.output_schema.get("type") != "object"
-        ):
-            raise ValueError("tool output_schema must have type='object'")
+        if self.output_schema is not None and not isinstance(self.output_schema, dict):
+            raise ValueError("tool output_schema must be a JSON Schema object")
+        invalid_header = find_invalid_x_mcp_header(self.input_schema)
+        if invalid_header is not None:
+            raise ValueError(f"invalid x-mcp-header annotation: {invalid_header}")
         for label, value in (("description", self.description), ("title", self.title)):
             if value is not None and not isinstance(value, str):
                 raise TypeError(f"tool {label} must be a string")
@@ -152,18 +180,26 @@ class WorkerTool:
             or self.execution.get("taskSupport", "forbidden") != "forbidden"
         ):
             raise TypeError("Workers tools only support execution.taskSupport='forbidden'")
+        if self.required_capabilities is not None and not isinstance(
+            self.required_capabilities,
+            dict,
+        ):
+            raise TypeError("tool required_capabilities must be an object")
         try:
-            json.dumps(self.wire(), allow_nan=False)
+            json.dumps(self.wire(modern=False), allow_nan=False)
+            json.dumps(self.required_capabilities, allow_nan=False)
         except (TypeError, ValueError) as exc:
             raise TypeError("tool definition must be JSON serializable") from exc
 
-    def wire(self) -> dict[str, Any]:
+    def wire(self, *, modern: bool) -> dict[str, Any]:
         value: dict[str, Any] = {"name": self.name, "inputSchema": self.input_schema}
         if self.description is not None:
             value["description"] = self.description
         if self.title is not None:
             value["title"] = self.title
-        if self.output_schema is not None:
+        if self.output_schema is not None and (
+            modern or self.output_schema.get("type") == "object"
+        ):
             value["outputSchema"] = self.output_schema
         if self.annotations is not None:
             value["annotations"] = self.annotations
@@ -171,7 +207,8 @@ class WorkerTool:
             value["icons"] = list(self.icons)
         if self.meta is not None:
             value["_meta"] = self.meta
-        if self.execution is not None:
+        # Tasks left the 2026 core protocol and moved to an extension.
+        if self.execution is not None and not modern:
             value["execution"] = self.execution
         return value
 
@@ -190,7 +227,12 @@ class WorkerMcpServer:
         *,
         version: str,
         title: str | None = None,
+        description: str | None = None,
+        website_url: str | None = None,
         instructions: str | None = None,
+        tools_ttl_ms: int = 0,
+        cache_scope: str = "private",
+        extensions: Mapping[str, Mapping[str, Any]] | None = None,
     ) -> None:
         if not isinstance(name, str) or not name:
             raise ValueError("server name must not be empty")
@@ -198,12 +240,37 @@ class WorkerMcpServer:
             raise ValueError("server version must not be empty")
         if title is not None and not isinstance(title, str):
             raise TypeError("server title must be a string")
+        if description is not None and not isinstance(description, str):
+            raise TypeError("server description must be a string")
+        if website_url is not None and not isinstance(website_url, str):
+            raise TypeError("server website_url must be a string")
         if instructions is not None and not isinstance(instructions, str):
             raise TypeError("server instructions must be a string")
+        if not isinstance(tools_ttl_ms, int) or isinstance(tools_ttl_ms, bool) or tools_ttl_ms < 0:
+            raise ValueError("tools_ttl_ms must be a non-negative integer")
+        if cache_scope not in ("public", "private"):
+            raise ValueError("cache_scope must be 'public' or 'private'")
+        if extensions is not None and (
+            not isinstance(extensions, Mapping)
+            or any(
+                not isinstance(name, str) or not isinstance(value, Mapping)
+                for name, value in extensions.items()
+            )
+        ):
+            raise TypeError("extensions must map identifiers to capability objects")
         self.name = name
         self.version = version
         self.title = title
+        self.description = description
+        self.website_url = website_url
         self.instructions = instructions
+        self.tools_ttl_ms = tools_ttl_ms
+        self.cache_scope = cache_scope
+        self.extensions = {name: dict(value) for name, value in (extensions or {}).items()}
+        try:
+            json.dumps(self.extensions, allow_nan=False)
+        except (TypeError, ValueError) as exc:
+            raise TypeError("extensions must be JSON serializable") from exc
         self._tools: dict[str, WorkerTool] = {}
         self._validators: dict[tuple[str, str], Any] | None = None
 
@@ -219,6 +286,7 @@ class WorkerMcpServer:
         icons: Sequence[dict[str, Any]] = (),
         meta: dict[str, Any] | None = None,
         execution: dict[str, Any] | None = None,
+        required_capabilities: dict[str, Any] | None = None,
     ) -> Callable[[ToolHandler], ToolHandler]:
         """Register a tool while keeping the decorated callable unchanged."""
 
@@ -236,26 +304,50 @@ class WorkerMcpServer:
                 icons=tuple(icons),
                 meta=meta,
                 execution=execution,
+                required_capabilities=required_capabilities,
             )
             self._validators = None
             return handler
 
         return register
 
-    async def dispatch(self, request: dict[str, Any]) -> dict[str, Any]:
+    async def dispatch(
+        self,
+        request: dict[str, Any],
+        *,
+        modern: bool,
+    ) -> dict[str, Any]:
         """Dispatch one validated JSON-RPC request and return its result object."""
         await self._ensure_validators()
         method = request["method"]
         params = request.get("params", {})
+
+        if modern:
+            if method in MODERN_REMOVED_METHODS:
+                raise _ProtocolError(METHOD_NOT_FOUND, "Method not found")
+            if method == "server/discover":
+                result = self._discover(params)
+            elif method == "tools/list":
+                result = self._list_tools(params, modern=True)
+            elif method == "tools/call":
+                result = await self._call_tool(params, modern=True)
+            else:
+                raise _ProtocolError(-32601, "Method not found")
+            result.setdefault("resultType", "complete")
+            meta = result.setdefault("_meta", {})
+            if not isinstance(meta, dict):
+                raise _ProtocolError(-32603, "Invalid server result metadata")
+            meta[SERVER_INFO_META_KEY] = self._server_info()
+            return result
 
         if method == "initialize":
             return self._initialize(params)
         if method == "ping":
             return {}
         if method == "tools/list":
-            return self._list_tools(params)
+            return self._list_tools(params, modern=False)
         if method == "tools/call":
-            return await self._call_tool(params)
+            return await self._call_tool(params, modern=False)
         raise _ProtocolError(-32601, "Method not found")
 
     def _initialize(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -272,26 +364,60 @@ class WorkerMcpServer:
         # A server that does not support the client's proposed revision MUST
         # answer with one it does support; the client then decides whether to
         # continue (MCP lifecycle version negotiation).
-        server_info: dict[str, Any] = {"name": self.name, "version": self.version}
-        if self.title is not None:
-            server_info["title"] = self.title
         result: dict[str, Any] = {
-            "protocolVersion": PROTOCOL_VERSION,
+            "protocolVersion": LEGACY_PROTOCOL_VERSION,
             "capabilities": {"tools": {"listChanged": False}},
-            "serverInfo": server_info,
+            "serverInfo": self._server_info(),
         }
         if self.instructions is not None:
             result["instructions"] = self.instructions
         return result
 
-    def _list_tools(self, params: dict[str, Any]) -> dict[str, Any]:
-        if "cursor" in params:
+    def _discover(self, params: dict[str, Any]) -> dict[str, Any]:
+        if set(params) - {"_meta"}:
+            raise _ProtocolError(-32602, "Invalid server/discover parameters")
+        capabilities: dict[str, Any] = {"tools": {}}
+        if self.extensions:
+            capabilities["extensions"] = self.extensions
+        result: dict[str, Any] = {
+            "supportedVersions": list(MODERN_PROTOCOL_VERSIONS),
+            "capabilities": capabilities,
+            "ttlMs": self.tools_ttl_ms,
+            "cacheScope": self.cache_scope,
+        }
+        if self.instructions is not None:
+            result["instructions"] = self.instructions
+        return result
+
+    def _list_tools(self, params: dict[str, Any], *, modern: bool) -> dict[str, Any]:
+        if set(params) - ({"_meta"} if modern else set()) or "cursor" in params:
             # This server never emits a cursor, so no cursor can be one
             # previously issued by it.  MCP cursors are strings, not null.
             raise _ProtocolError(-32602, "Invalid cursor")
-        return {"tools": [tool.wire() for tool in self._tools.values()]}
+        result: dict[str, Any] = {
+            "tools": [self._tools[name].wire(modern=modern) for name in sorted(self._tools)]
+        }
+        if modern:
+            result["ttlMs"] = self.tools_ttl_ms
+            result["cacheScope"] = self.cache_scope
+        return result
 
-    async def _call_tool(self, params: dict[str, Any]) -> dict[str, Any]:
+    def _server_info(self) -> dict[str, Any]:
+        info: dict[str, Any] = {"name": self.name, "version": self.version}
+        if self.title is not None:
+            info["title"] = self.title
+        if self.description is not None:
+            info["description"] = self.description
+        if self.website_url is not None:
+            info["websiteUrl"] = self.website_url
+        return info
+
+    async def _call_tool(
+        self,
+        params: dict[str, Any],
+        *,
+        modern: bool,
+    ) -> dict[str, Any]:
         if "task" in params:
             # Tasks are experimental and not advertised.  The tasks spec
             # requires Method not found for augmentation of a forbidden tool.
@@ -303,6 +429,26 @@ class WorkerMcpServer:
         tool = self._tools.get(name)
         if tool is None:
             raise _ProtocolError(-32602, f"Unknown tool: {name}")
+        if modern:
+            meta = params.get("_meta")
+            declared = (
+                meta.get("io.modelcontextprotocol/clientCapabilities")
+                if isinstance(meta, dict)
+                else None
+            )
+            rejection = self.required_capability_rejection(
+                {
+                    "method": "tools/call",
+                    "params": params,
+                },
+                declared,
+            )
+            if rejection is not None:
+                raise _ProtocolError(
+                    rejection.code,
+                    rejection.message,
+                    rejection.data,
+                )
 
         validator = self._validator(name, "input")
         errors = sorted(validator.iter_errors(arguments), key=lambda error: list(error.path))
@@ -328,7 +474,7 @@ class WorkerMcpServer:
 
         if tool.output_schema is not None and not result.get("isError", False):
             structured = result.get("structuredContent", _MISSING)
-            if not isinstance(structured, dict):
+            if structured is _MISSING:
                 logger.error("tool %s omitted structuredContent required by outputSchema", name)
                 return _text_result("Tool returned an invalid structured result", is_error=True)
             output_errors = sorted(
@@ -338,7 +484,36 @@ class WorkerMcpServer:
             if output_errors:
                 logger.error("tool %s returned output that does not match outputSchema", name)
                 return _text_result("Tool returned an invalid structured result", is_error=True)
+        if (
+            not modern
+            and "structuredContent" in result
+            and not isinstance(result["structuredContent"], dict)
+        ):
+            # 2025-era schemas only admit an object here. Preserve the
+            # model-facing content while withholding a value the peer cannot
+            # parse; modern clients receive the complete structured value.
+            result.pop("structuredContent")
         return result
+
+    def required_capability_rejection(
+        self,
+        request: Mapping[str, Any],
+        declared: Any,
+    ) -> ProtocolRejection | None:
+        """Apply a registered tool's modern client-capability requirement."""
+
+        if request.get("method") != "tools/call":
+            return None
+        params = request.get("params")
+        if not isinstance(params, Mapping):
+            return None
+        name = params.get("name")
+        if not isinstance(name, str):
+            return None
+        tool = self._tools.get(name)
+        if tool is None or tool.required_capabilities is None:
+            return None
+        return require_client_capabilities(declared, tool.required_capabilities)
 
     async def _ensure_validators(self) -> None:
         if self._validators is not None:
@@ -368,7 +543,7 @@ class WorkerMcpServer:
 
 
 class WorkerMcpMount:
-    """MCP 2025-11-25 Streamable HTTP endpoint for a ``WorkerMcpServer``."""
+    """Dual-era Streamable HTTP endpoint for a ``WorkerMcpServer``."""
 
     def __init__(
         self,
@@ -403,8 +578,13 @@ class WorkerMcpMount:
             return problem(404, title="Not Found")
         if not self._origin_allowed(raw):
             return problem(403, title="Origin not allowed")
-        if raw.method in ("GET", "DELETE") and not self._protocol_version_ok(raw):
-            return problem(400, title="Unsupported MCP-Protocol-Version")
+        declared_version = raw.headers.get(PROTOCOL_VERSION_HEADER)
+        if (
+            raw.method in ("GET", "DELETE")
+            and declared_version is not None
+            and declared_version != LEGACY_PROTOCOL_VERSION
+        ):
+            return problem(405, title="Method Not Allowed", headers={"allow": "POST"})
 
         principal: Principal | None = None
         if self.authorization is not None:
@@ -440,19 +620,75 @@ class WorkerMcpMount:
                 title="Unsupported Media Type",
                 detail="MCP POST requests must use application/json",
             )
+        transport_headers = lower_headers(raw.headers)
+        modern_header = (
+            transport_headers.get(MCP_PROTOCOL_VERSION_HEADER) is not None
+            and transport_headers[MCP_PROTOCOL_VERSION_HEADER] not in LEGACY_PROTOCOL_VERSIONS
+        )
         try:
             message = json.loads(
                 (await raw.bytes()).decode("utf-8"),
                 parse_constant=_reject_json_constant,
             )
         except (UnicodeDecodeError, ValueError):
+            if modern_header:
+                return self._protocol_rejection(
+                    None,
+                    ProtocolRejection(PARSE_ERROR, "Parse error"),
+                )
             return problem(400, title="Body must be UTF-8 JSON")
 
         kind = _message_kind(message)
+        modern = should_route_modern(message, transport_headers)
         if kind is None:
+            if modern:
+                return self._protocol_rejection(
+                    None,
+                    ProtocolRejection(
+                        INVALID_REQUEST,
+                        "Body must be a single JSON-RPC request object",
+                    ),
+                )
             return problem(400, title="Body must be a single JSON-RPC message")
+        if modern:
+            if kind != "request":
+                return self._protocol_rejection(
+                    None,
+                    ProtocolRejection(
+                        INVALID_REQUEST,
+                        "Body must be a single JSON-RPC request object",
+                    ),
+                )
+            duplicated = find_duplicated_routing_header(raw.headers.raw())
+            if duplicated is not None:
+                return self._protocol_rejection(
+                    message["id"],
+                    ProtocolRejection(
+                        HEADER_MISMATCH,
+                        f"{duplicated} header appears more than once",
+                    ),
+                )
+            route = classify_modern_request(
+                message,
+                transport_headers,
+                supported_versions=MODERN_PROTOCOL_VERSIONS,
+            )
+            if isinstance(route, ProtocolRejection):
+                return self._protocol_rejection(message["id"], route)
+            if message["method"] in MODERN_REMOVED_METHODS:
+                return self._protocol_rejection(
+                    message["id"],
+                    ProtocolRejection(METHOD_NOT_FOUND, "Method not found"),
+                )
+            capability_rejection = self.server.required_capability_rejection(
+                message,
+                route.client_capabilities,
+            )
+            if capability_rejection is not None:
+                return self._protocol_rejection(message["id"], capability_rejection)
+
         is_initialize = kind == "request" and message["method"] == "initialize"
-        if not is_initialize and not self._protocol_version_ok(raw):
+        if not modern and not is_initialize and not self._protocol_version_ok(raw):
             return problem(400, title="Unsupported MCP-Protocol-Version")
         if kind != "request":
             # Notifications and client responses do not receive JSON-RPC
@@ -466,15 +702,28 @@ class WorkerMcpMount:
             if missing:
                 return self._insufficient_scope(list(required))
 
+        if modern:
+            param_rejection = self._modern_param_rejection(
+                message,
+                transport_headers,
+                raw.headers.raw(),
+            )
+            if param_rejection is not None:
+                return self._protocol_rejection(message["id"], param_rejection)
+
         try:
-            result = await self.server.dispatch(message)
+            result = await self.server.dispatch(message, modern=modern)
             response = {"jsonrpc": "2.0", "id": message["id"], "result": result}
         except _ProtocolError as exc:
             error: dict[str, Any] = {"code": exc.code, "message": exc.message}
             if exc.data is not _MISSING:
                 error["data"] = exc.data
             response = {"jsonrpc": "2.0", "id": message["id"], "error": error}
-            status = exc.status
+            status = (
+                ERROR_CODE_HTTP_STATUS[exc.code]
+                if modern and exc.code in ERROR_CODE_HTTP_STATUS
+                else exc.status
+            )
             headers = exc.headers
         else:
             status = 200
@@ -486,7 +735,7 @@ class WorkerMcpMount:
         )
 
     def _protocol_version_ok(self, raw: Request) -> bool:
-        return raw.headers.get(PROTOCOL_VERSION_HEADER) == PROTOCOL_VERSION
+        return raw.headers.get(PROTOCOL_VERSION_HEADER) == LEGACY_PROTOCOL_VERSION
 
     def _origin_allowed(self, raw: Request) -> bool:
         return origin_allowed(
@@ -501,6 +750,54 @@ class WorkerMcpMount:
         params = message.get("params", {})
         name = params.get("name")
         return self.tool_scopes.get(name, ()) if isinstance(name, str) else ()
+
+    def _modern_param_rejection(
+        self,
+        message: dict[str, Any],
+        headers: Mapping[str, str],
+        raw_headers: Sequence[tuple[str, str]],
+    ) -> ProtocolRejection | None:
+        if message["method"] != "tools/call":
+            return None
+        params = message.get("params", {})
+        if not isinstance(params, dict):
+            return None
+        name = params.get("name")
+        arguments = params.get("arguments", {})
+        if not isinstance(name, str) or not isinstance(arguments, dict):
+            return None
+        tool = self.server._tools.get(name)
+        if tool is None:
+            return None
+        return validate_mcp_param_headers(
+            tool.input_schema,
+            arguments,
+            headers,
+            raw_headers=raw_headers,
+        )
+
+    @staticmethod
+    def _protocol_rejection(
+        request_id: str | int | None,
+        rejection: ProtocolRejection,
+    ) -> Response:
+        error: dict[str, Any] = {
+            "code": rejection.code,
+            "message": rejection.message,
+        }
+        if rejection.data is not None:
+            error["data"] = rejection.data
+        return Response(
+            _json_dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "error": error,
+                }
+            ),
+            status=rejection.http_status,
+            headers={"content-type": CONTENT_TYPE_JSON},
+        )
 
     def _unauthorized(self, *, error: str | None = None) -> Response:
         authorization = self.authorization
@@ -601,8 +898,8 @@ def _normalize_tool_result(value: Any) -> dict[str, Any]:
         raise ToolError("Tool result content must be a list of MCP content blocks")
     if "isError" in result and not isinstance(result["isError"], bool):
         raise ToolError("Tool result isError must be a boolean")
-    if "structuredContent" in result and not isinstance(result["structuredContent"], dict):
-        raise ToolError("Tool result structuredContent must be an object")
+    if "resultType" in result and result["resultType"] != "complete":
+        raise ToolError("Tool handlers may only return complete results")
     if "_meta" in result and not isinstance(result["_meta"], dict):
         raise ToolError("Tool result _meta must be an object")
     try:

@@ -12,8 +12,13 @@
   ASGI は公式 python-sdk の API をそのまま使い、Workers は
   `WorkerMcpServer` が広告する tools capability だけを厳密に実装する。
 - ASGI は SDK の低レベル `Server` にメッセージストリームで接続する。
-  Workers は Pyodide の Pydantic wheel 制約を避けるため、JSON-RPC lifecycle /
-  ping / tools を独立実装し、未実装の任意 capability は広告しない。
+  Workers は Pyodide の Pydantic wheel 制約を避けるため、JSON-RPC /
+  discovery / tools を独立実装し、未実装の任意 capability は広告しない。
+- **公開契約は dual-era**。MCP 2026-07-28 は handshake-free・POST-only・
+  per-request metadata、2025-11-25 は initialize/session lifecycle。1つの endpoint
+  が両方をbodyとheaderから決定的に振り分ける。
+- 共通の protocol layer が標準header、`x-mcp-header`、error/HTTP mapping、
+  client capability gateを担当し、ASGI/Workers間の仕様driftを防ぐ。
 - 依存は CPython で `hayate + mcp`、Emscripten で
   `hayate + jsonschema + rpds-py`。エコシステムパッケージは
   「最小依存 + 理由の明記」(roadmap house style §2-4)。
@@ -22,17 +27,8 @@
 - 中期の本命 story は hayate-auth との合流(MCP OAuth):
   「**MCP サーバーとその認可サーバーを 1 つのアプリにマウントできる唯一の Python スタック**」。
 
-```python
-from mcp.server import Server          # 公式 SDK — ツール定義はここに書く
-from hayate import Hayate
-from hayate_mcp import McpMount
-
-server = Server("my-tools")
-# … @server.list_tools() / @server.call_tool() …
-
-app = Hayate()
-McpMount(server, path="/mcp").register(app)   # これだけ
-```
+公開例は SDK v2 の低レベル handler constructor を使う。完全な例は
+[README.md](README.md) と [examples/echo/server.py](examples/echo/server.py)。
 
 ---
 
@@ -67,8 +63,12 @@ stdio transport(SDK が既に提供)。
 
 | 対象 | 文書 | 対応 |
 |---|---|---|
-| MCP | modelcontextprotocol.io spec — **Streamable HTTP transport**。最新 stable **2025-11-25**。**2026-07-28 が RC** | ASGI は SDK、Workers は広告した lifecycle / ping / tools surface を実装。`MCP-Protocol-Version` を検証 |
-| MCP-Protocol-Version | Streamable HTTP transport(2025-06-18+) | ASGI は initialize response の合意版を session ごとに固定し、後続リクエストの異なる値を 400。欠落時は session の合意版を source of truth にする。2025-11-25 専用の Workers は欠落・異なる値とも 400 |
+| MCP | modelcontextprotocol.io specification **2026-07-28** と互換契約 **2025-11-25** | ASGI は SDK 2.x、Workers は広告した tools surface。era共通transport検証は `protocol.py` |
+| MCP 2026 lifecycle | handshake-free stateless lifecycle / `server/discover` | 全POSTにprotocolVersion/clientCapabilities metadata。session idなし。旧methodは `-32601` + HTTP 404 |
+| MCP-Protocol-Version / routing headers | 2026 transport + SEP-2243 | body metadataと `MCP-Protocol-Version` / `Mcp-Method` / `Mcp-Name` / `Mcp-Param-*` を照合。不一致 `-32020` + HTTP 400 |
+| MCP 2025 lifecycle | initialize/session + Streamable HTTP | ASGI はinitialize responseの合意版をsessionごとに固定。Workersはstateless compatibility |
+| MRTR / requestState | SEP-2322 | ASGI SDKの `InputRequiredResult` と暗号化・期限・principal/audience bindingを利用 |
+| Caching | SEP-2549 | cacheable resultに `ttlMs` / `cacheScope`。ASGIはSDK、Workersはserver設定 |
 | JSON-RPC 2.0 | jsonrpc.org | ASGI は SDK、Workers は単一 message envelope・標準 error code・notification 202 を検証 |
 | SSE | WHATWG HTML | ストリーミング応答。本体 `sse.py` を利用 |
 | Origin 検証 | MCP spec(**MUST**)+ RFC 6454 | present かつ invalid な Origin は 403(§5) |
@@ -83,13 +83,18 @@ stdio transport(SDK が既に提供)。
 ```
 ユーザーコード:  SDK Server(ASGI) | WorkerMcpServer(Workers)
 ────────────────────────────────────────────────────────────
-プロトコル:  公式 SDK         | lifecycle/ping/tools 2025-11-25
+protocol.py: era判定 / header codec・照合 / capability gate / error mapping
+────────────────────────────────────────────────────────────
+2026: server/discover + stateless POST + resultType/cache/MRTR
+2025: initialize + session-compatible Streamable HTTP
+────────────────────────────────────────────────────────────
+dispatch:  公式 SDK 2.x       | Workers-native tools runtime
 ────────────────────────────────────────────────────────────
 hayate-mcp:  McpMount         | WorkerMcpMount
    POST   → JSON-RPC メッセージ受信 → 単発 JSON 応答 or SSE ストリーム
-   GET    → ASGI: サーバー起点 SSE / Workers: 405
-   DELETE → ASGI: セッション終了 / Workers: stateless no-op
-   ASGI: Mcp-Session-Id 発行・検証 / 共通: Origin 検証
+   GET    → 2025 ASGI: サーバー起点 SSE / 2026・Workers: 405
+   DELETE → 2025 ASGI: セッション終了 / stateless: no-op
+   ASGI 2025だけMcp-Session-Id / 共通: Origin・auth検証
 ─────────────────────────────────────────────
 hayate:  register(app) → app.on("GET"/"POST"/"DELETE", path)
 ─────────────────────────────────────────────
@@ -113,10 +118,11 @@ hayate-mcp は HTTP 側でメッセージを受け、ストリーム経由で `S
 
 ### 3.3 Workers の独立 runtime(決定、v0.8)
 
-Workers では `WorkerMcpServer` / `WorkerMcpMount` を使う。2025-11-25 の初期化、
-ping、tools/list、tools/call、JSON Schema 2020-12、OAuth principal/scope を実装する。
-capabilities は `tools.listChanged=false` だけを返し、resources / prompts / logging /
-sampling / tasks / GET SSE は広告しない。
+Workers では `WorkerMcpServer` / `WorkerMcpMount` を使う。2026-07-28 の
+`server/discover`、stateless `tools/list` / `tools/call`、標準/custom header、
+result envelope、cache hint、server identity、JSON Schema 2020-12を実装する。
+2025-11-25のinitialize/ping/toolsも互換pathとして保持する。resources / prompts /
+logging / sampling / Tasks / GET SSE は広告しない。
 
 - **理由**: 公式 SDK 1.28.1 は Pydantic 2.11+ を要求する一方、pywrangler の
   Pyodide index は Pydantic 2.10.6 / pydantic-core 2.27.2 まで。旧 SDK を残すと
@@ -131,7 +137,12 @@ sampling / tasks / GET SSE は広告しない。
   再利用できる。model-visible tool argument に認証・binding を混ぜず、並行 request 間で
   state を共有しない。純粋な `fetch(Request)` には host context を捏造しない。
   app 固有の認証・rate limit・依存障害は `WorkerProtocolError` で JSON-RPC code と
-  HTTP status/header を同時に保持する。
+  HTTP status/header を同時に保持する。ただし2026 coreがHTTP statusを規定する
+  reserved error codeではprotocol mappingを優先する。
+- **capability honesty**: toolがsampling等を必要とする場合は
+  `required_capabilities` を宣言し、未宣言clientをhandler前に `-32021` で拒否する。
+  Tasksはcoreからextensionへ移動したため、extension negotiationと実装が揃うまで
+  `capabilities.extensions` に広告しない。
 - **適合証拠**: unit test、公式 SDK model validation、uvicorn E2E、
   workerd 上の公式 SDK client E2E を CI に常設する。
 
@@ -142,8 +153,10 @@ sampling / tasks / GET SSE は広告しない。
 - ASGI stateful mode は `Mcp-Session-Id`(spec 準拠)を発行し、
   `SessionStore` protocol で保持。
   house style 通り protocol 注入(hayate-auth の Adapter と同型)。
-- 既定は in-memory(単一プロセス)。Workers v0.8 は stateless で
-  `Mcp-Session-Id` を発行しない。将来サーバー起点ストリームやセッション状態を
+- **このsession pathは2025 request専用**。2026 requestは同じmount設定でも常に
+  self-contained/statelessで、`Mcp-Session-Id` を発行も受理もしない。
+- 既定は in-memory(単一プロセス)。Workers は両eraとも stateless で
+  session idを発行しない。将来サーバー起点ストリームやセッション状態を
   Workers に追加する場合は Durable Object が必要(§11.2)。
 - resumability(`Last-Event-ID`)は spec 上 optional。**判断(2026-07-23): v0.2 では非対応** — 再生バッファはセッションが isolate をまたいで生きる DO ストア側に置くのが正しい構造で、メモリストアに足しても本番で意味を成さないため(auth 本番実測でも isolate 揮発を確認)。DO 版と同時に再判断。
 
@@ -153,13 +166,15 @@ sampling / tasks / GET SSE は広告しない。
   localhost バインド時の注意も README に明記。
 - v0.1 は authless(spec 上 optional)。
 - **v0.4: OAuth 2.0 Resource Server 側を実装(出荷済み)**。`McpMount(authorization=Authorization(...))`
-  で MCP Authorization(2025-11-25)+ RFC 9728 に対応:
+  で MCP Authorization(2026-07-28 / 2025-11-25)+ RFC 9728 に対応:
   - `/.well-known/oauth-protected-resource` に Protected Resource Metadata(RFC 9728)を提供
     (`resource` / `authorization_servers` / `bearer_methods_supported` / `scopes_supported`)。
     このエンドポイントはトークン不要の公開ディスカバリ。
   - 未認証リクエストは **401 + `WWW-Authenticate: Bearer resource_metadata="…"`**(RFC 9728 §5.1)
     でメタデータ URL を案内。Claude 等のクライアントはここから AS を発見する。
   - トークン検証は `verify_token(token) -> claims | None` の注入(RFC 6750 Bearer)。
+    verifierはsignature/issuer/expiryに加えRFC 8707のresource/audience一致まで検証し、
+    claimsを返すことが契約。
     **AS(トークン発行)側は分離**し、hayate-auth の将来の AS モード、または任意の
     RFC 6749 AS を指せる。これが「MCP サーバー + その AS を 1 アプリに」story の RS 半分。
 - ~~**残**: hayate-auth の AS モード(/authorize・/token・動的クライアント登録)は auth 側の
@@ -174,36 +189,44 @@ sampling / tasks / GET SSE は広告しない。
 ### 6.1 ASGI
 
 `McpMount` は公式 SDK `Server` を anyio stream で駆動する。stateful では
-`Mcp-Session-Id` と GET SSE を提供し、`stateless=True` では1リクエスト内で
-`Server.run(..., stateless=True)` を完結させる。公式 SDK は `>=1.28.1,<2` で、
-MCP 2025-11-25 を保証する。
+`Mcp-Session-Id` と GET SSE を2025 clientへ提供する。2026 requestと
+`stateless=True` の2025 compatibility pathは1リクエスト内で `Server.run(...)`
+を完結させる。公式 SDK は `>=2.0.0,<3`。progress等の中間notificationがある
+2026 responseは、final responseまでを1本のbounded POST SSEで返す。
+`subscriptions/listen` handlerを登録したserverはresponse-ownedなlive SSEへ
+切り替え、ack-first、subscription ID、filter、15秒keepalive、body close時の
+task cancellationをtransportが担う。
 
 ### 6.2 Workers
 
-`WorkerMcpMount` は常に stateless で、`WorkerMcpServer` の lifecycle / ping /
-tools を直接 dispatch する。SDK / Pydantic / anyio task group は bundle に入らず、
-detached task も作らない。GET は 405、DELETE は no-op 200。
+`WorkerMcpMount` は常に stateless。2026はdiscover/tools、2025は
+initialize/ping/toolsを直接dispatchする。SDK / Pydantic / anyio task groupは
+bundleに入らず、detached taskも作らない。GETは405、DELETEはno-op 200。
 
 依存 marker は次の通り:
 
-- CPython: `mcp>=1.28.1,<2`
+- CPython: `mcp>=2.0.0,<3`
 - Emscripten: `jsonschema>=4.20,<5` と
   pywrangler 1.15 の Pyodide 0.28.3 index に存在する
   `rpds-py==0.23.1`
 
-これにより両ランタイムが 2025-11-25 を negotiate する。Workers は optional
-capability を部分実装せず、未広告にすることで仕様上の表面積を tools に限定する。
+これにより両ランタイムが2026-07-28をnativeに処理し、2025-11-25 clientも
+維持する。Workersはoptional capabilityを部分実装せず、未広告にすることで
+仕様上の表面積をtoolsに限定する。
 
 ### 6.3 リビジョン追従
 
-stable revision を一つだけ公開契約とする。ASGI は SDK upgrade、Workers は
-official schema/changelog と wire conformance test で同時更新する。次期
-2026-07-28 は現時点で RC のため、このリリースには混ぜない。stable 化後は別変更で
-両 runtime を同時に上げる。
+公開契約は「current + 直前のhandshake era」の二層とする。新eraを追加するときは
+共有`protocol.py`、ASGI SDK、Workers-native wire、conformance fixtureを同じ変更で
+更新する。任意extensionはcore revisionと分離し、capability advertisement、
+client opt-in、handler、negative testがすべて揃ったときだけ有効化する。
 
 ## 7. テスト戦略
 
 - transport 単体は `await mount.fetch(Request(...))` 直叩き(house style の純関数コア)。
+- official conformance は2025-11-25の30 scenarioと2026-07-28 coreの40 scenarioを
+  expected-failureなしで固定する。MRTR/requestState改ざん、cache、header、
+  HTTP status/error codeもdenominatorに含める。
 - E2E は **MCP Inspector と Claude Code を実クライアント**として受け入れ基準に組み込む
   (モックだけで通すと workers-py ラッパー形状事件の再演になる — 本体 CLAUDE.md の教訓)。
 - 3 ランタイム: pytest 直 / uvicorn / workerd。
@@ -223,7 +246,7 @@ official schema/changelog と wire conformance test で同時更新する。次�
 | リスク | 対応 |
 |---|---|
 | SDK の最新版が Pyodide に解決できない | Workers-native runtime で SDK / Pydantic を bundle から除去。workerd + 公式 SDK client の境界 E2E を CI 固定 |
-| MCP spec の改訂速度 | ASGI は SDK 追従、Workers は広告 surface と wire conformance test に限定。対応リビジョンを README に明記 |
+| MCP spec の改訂速度 | era判定とtransport invariantを共有層へ集約。ASGI/Workers/fixtureを同一PRで更新しdual-era conformanceを必須化 |
 | FastMCP v3 が同領域を埋める | 土俵を変える: Workers + hayate-auth 合流(§5)。汎用 ASGI 統合では競わない |
 | PyPI 名スクワット | `hayate-mcp` 空き確認 2026-07-22。0.0.x 早期公開で確保 |
 
@@ -240,17 +263,19 @@ official schema/changelog と wire conformance test で同時更新する。次�
 | v0.6 | **出荷(2026-07-23)**: PRM の well-known URI を **RFC 9728 §3.1 の path-insertion 形式に是正**(`https://h/mcp` → `https://h/.well-known/oauth-protected-resource/mcp`)。0.5.x までは well-known をパスの後ろに連結した URL を広告しつつルート形式を serve しており、広告 URL が 404 を指していた(auth の AS spike on workerd が発見。クライアントはフォールバック探索で動いていた) | ✅ 広告 URL と serve パスの一致をパス付き / パス無し resource の両方でテスト固定。旧 2 形式は 404。テスト 44 |
 | v0.7 | **出荷準備(2026-07-24)**: MCP 2025-11-25 transport media 契約、Principal/context、global/tool scope、session owner binding、secure URI、LazyMcpMount、`py.typed`、CPython SDK `>=1.28.1,<2` | 公式 SDK E2E を含む 60 テスト。strict mypy 6 files。FolioMCP 相当の AS→resource→tool principal 横断試験 ✅ |
 | v0.8 | **出荷準備(2026-07-24)**: Workers-native lifecycle/ping/tools runtime。旧 SDK 依存を除去し全 runtime 2025-11-25 | JSON Schema 2020-12、OAuth/scope、workerd、公式 SDK client の相互運用を CI 固定。SDK/Pydantic が Workers bundle に無いことも検証 |
+| v0.12 | **実装完了(2026-07-30)**: MCP 2026-07-28 + 2025-11-25 dual-era、SDK 2.x、stateless discovery、標準/custom header、cache hints、resultType、capability gate、MRTR、暗号化requestState、bounded POST SSE、live subscriptions | official conformance 70/70(旧30+新40、subscription実経路を含む)、pytest、mypy、workerd、SDK client E2E |
 | v1.0 | API 凍結 | 本体 v1.0 より後 |
 
 ## 11. Workers 対応(2026-07-23、緑化)
 
-### 11.1 Workers-native stateless runtime(出荷準備)
+### 11.1 Workers-native stateless runtime
 
 **`WorkerMcpServer` + `WorkerMcpMount` + 素の `to_workers(app)` で対応**。DO は不要。
 
-- initialize / ping / tools/list / tools/call を1リクエスト内で完結し、detached task を作らない。
-- `tools` だけを capability として広告し、Task augmentation は capability と
-  tool.execution の双方で未広告。送信された場合は spec 指定どおり `-32601`。
+- 2026のserver/discover/toolsと2025のinitialize/ping/toolsを1リクエスト内で完結し、
+  detached taskを作らない。
+- `tools` だけをcapabilityとして広告し、Tasks extensionは未広告。
+  task augmentationが送信された場合は `-32601`。
 - JSON Schema validator は request scope で初期化し、global import entropy 制約を回避。
 - サーバー起点メッセージとセッション跨ぎ状態は持たない。GET は 405、DELETE は no-op 200。
 

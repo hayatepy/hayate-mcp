@@ -74,16 +74,16 @@ class McpSession:
     async def _read_loop(self) -> None:
         try:
             async for item in self._from_server:
-                root = item.message.root
-                if isinstance(root, JSONRPCResponse | JSONRPCError):
-                    future = self._pending.get(root.id)
+                message = item.message
+                if isinstance(message, JSONRPCResponse | JSONRPCError):
+                    future = self._pending.get(message.id)
                     if future is not None and not future.done():
-                        future.set_result(item.message)
+                        future.set_result(message)
                 else:
                     try:
-                        self._outbound.put_nowait(item.message)
+                        self._outbound.put_nowait(message)
                     except asyncio.QueueFull:
-                        logger.debug("outbound queue full; dropping %s", root)
+                        logger.debug("outbound queue full; dropping %s", message)
         except anyio.EndOfStream:  # pragma: no cover - server shut down
             pass
 
@@ -101,7 +101,12 @@ class McpSession:
                 message = await self._outbound.get()
                 if message is None:
                     return
-                yield {"data": message.model_dump_json(by_alias=True, exclude_none=True)}
+                yield {
+                    "data": message.model_dump_json(
+                        by_alias=True,
+                        exclude_none=True,
+                    )
+                }
         finally:
             self._stream_claimed = False
 
@@ -109,10 +114,9 @@ class McpSession:
         await self._to_server.send(SessionMessage(message=message))
 
     async def request(self, message: JSONRPCMessage, *, timeout: float = 30.0) -> JSONRPCMessage:
-        root = message.root
-        if not isinstance(root, JSONRPCRequest):
+        if not isinstance(message, JSONRPCRequest):
             raise TypeError("McpSession.request requires a JSON-RPC request")
-        request_id = root.id
+        request_id = message.id
         future: asyncio.Future[JSONRPCMessage] = asyncio.get_running_loop().create_future()
         self._pending[request_id] = future
         try:

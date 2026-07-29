@@ -1,4 +1,4 @@
-"""MCP 2025-11-25 on Cloudflare Python Workers — stateless, no Durable Object.
+"""MCP 2026-07-28 + 2025 compatibility on Cloudflare Python Workers.
 
 The Workers-native tools runtime has no Pydantic dependency and no long-lived
 task: a plain Worker suffices. It advertises only the MCP capabilities it
@@ -19,7 +19,13 @@ from hayate_mcp import WorkerMcpMount, WorkerMcpServer, get_request_context
 
 
 def build_server() -> WorkerMcpServer:
-    server = WorkerMcpServer("hayate-echo-workers", version="0.1.0")
+    server = WorkerMcpServer(
+        "hayate-echo-workers",
+        version="0.12.0",
+        description="Edge-native Python MCP tools.",
+        tools_ttl_ms=60_000,
+        cache_scope="public",
+    )
 
     @server.tool(
         name="echo",
@@ -30,7 +36,6 @@ def build_server() -> WorkerMcpServer:
             "required": ["text"],
             "additionalProperties": False,
         },
-        execution={"taskSupport": "forbidden"},
     )
     async def echo(arguments: dict) -> str:
         assert get_request_context() is not None
