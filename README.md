@@ -1,8 +1,8 @@
 # hayate-mcp
 
-> **Hayate ecosystem:** [Start here](https://github.com/hayatepy/.github/blob/main/docs/START.md)
+> **Hayate ecosystem:** [Start here](https://hayatepy.dev/)
 > · [Production golden app](https://github.com/hayatepy/golden-app)
-> · [Tested compatibility](https://github.com/hayatepy/.github/blob/main/docs/COMPATIBILITY.md)
+> · [Tested compatibility](https://hayatepy.dev/evidence/compatibility/)
 
 Mount an MCP server into a [hayate](https://github.com/hayatepy/hayate) app:
 an official [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk)

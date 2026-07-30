@@ -26,6 +26,7 @@ from mcp.types import (
 from mcp.types.version import HANDSHAKE_PROTOCOL_VERSIONS
 from pydantic import ValidationError
 
+from . import __version__
 from .authorization import Authorization
 from .context import get_request_context, request_context
 from .origin import origin_allowed
@@ -453,7 +454,7 @@ class McpMount:
                         "capabilities": {},
                         "clientInfo": {
                             "name": "hayate-stateless-bridge",
-                            "version": "0.12.0",
+                            "version": __version__,
                         },
                     },
                 )
