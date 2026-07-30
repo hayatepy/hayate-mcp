@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "hayate-mcp"
-version = "0.12.0"
+version = "0.12.1"
 description = "MCP Streamable HTTP for hayate across ASGI and Cloudflare Workers, with OAuth resource-server support"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -30,6 +30,7 @@ dependencies = [
 ]
 
 [project.urls]
+Homepage = "https://hayatepy.dev/ecosystem/#hayate-mcp"
 Repository = "https://github.com/hayatepy/hayate-mcp"
 Documentation = "https://github.com/hayatepy/hayate-mcp#readme"
 Changelog = "https://github.com/hayatepy/hayate-mcp/blob/main/CHANGELOG.md"

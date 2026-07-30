@@ -4,6 +4,14 @@ All notable changes to hayate-mcp are documented here.
 
 ## Unreleased
 
+## [0.12.1] - 2026-07-30
+
+### Changed
+
+- Route public ecosystem discovery through `hayatepy.dev`, publish the
+  canonical ecosystem page as package Homepage metadata, and keep the
+  stateless bridge identity aligned with the distribution version.
+
 ## [0.12.0] - 2026-07-30
 
 ### Added
